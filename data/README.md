@@ -1,0 +1,25 @@
+data
+    cad-recode
+        train
+            0.py
+            0.stl
+            ...
+        val
+            0.py
+            0.stl
+            ...
+        train.pkl
+        val.pkl
+    text2cad
+        cadquery
+            0.py
+            ...
+        train.pkl
+        val.pkl
+        test.pkl
+    deepcad_test_mesh
+        0.stl
+        ...
+    fusion360_test_mesh
+        0.stl
+        ...
