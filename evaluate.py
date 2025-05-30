@@ -109,7 +109,11 @@ def run_cd_single(py_file_name, pred_py_path, pred_mesh_path, pred_brep_path, gt
     return dict(file_name=eval_file_name, id=index, cd=cd, iou=iou)
 
 
-def run(gt_mesh_path, pred_py_path, pred_mesh_path, pred_brep_path, best_names_path, n_points, normalize_std):
+def run(gt_mesh_path, pred_py_path, n_points, normalize_std):
+    pred_mesh_path = os.path.join(os.path.dirname(pred_py_path), 'tmp_mesh')
+    pred_brep_path = os.path.join(os.path.dirname(pred_py_path), 'tmp_brep')
+    best_names_path = os.path.join(os.path.dirname(pred_py_path), 'tmp.txt')
+
     # should be no predicted meshes from previous experiments
     os.makedirs(pred_mesh_path, exist_ok=True)
     os.makedirs(pred_brep_path, exist_ok=True)
@@ -161,8 +165,7 @@ def run(gt_mesh_path, pred_py_path, pred_mesh_path, pred_brep_path, best_names_p
     with open(best_names_path, 'w') as f:
         f.writelines([line + '\n' for line in best_names])
 
-    print(f'ir (iou): {ir_iou / len(metrics) * 100:.2f}',
-          f'mean iou: {np.mean(iou):.3f}',
+    print(f'mean iou: {np.mean(iou):.3f}',
           f'median cd: {np.median(cd) * 1000:.3f}')
 
     cd = sorted(cd)
@@ -178,12 +181,8 @@ if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--gt-mesh-path', type=str, default='./data/deepcad_test_mesh')
     parser.add_argument('--pred-py-path', type=str, default='./work_dirs/tmp_py')
-    parser.add_argument('--pred-mesh-path', type=str, default='./work_dirs/tmp_mesh')
-    parser.add_argument('--pred-brep-path', type=str, default='./work_dirs/tmp_brep')
-    parser.add_argument('--best-names-path', type=str, default='./work_dirs/tmp.txt')
     parser.add_argument('--n-points', type=int, default=8192)
     parser.add_argument('--normalize_std', type=float, default=100)
     args = parser.parse_args()
     run(
-        args.gt_mesh_path, args.pred_py_path, args.pred_mesh_path, args.pred_brep_path,
-        args.best_names_path, args.n_points, args.normalize_std)
+        args.gt_mesh_path, args.pred_py_path, args.n_points, args.normalize_std)

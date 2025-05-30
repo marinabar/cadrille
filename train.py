@@ -6,8 +6,8 @@ import torch
 from torch.utils.data import ConcatDataset
 from transformers import AutoProcessor, Trainer, TrainingArguments, TrainerCallback
 
-from .cadrille import Cadrille, collate
-from .dataset import Text2CADDataset, CadRecodeDataset
+from cadrille import Cadrille, collate
+from dataset import Text2CADDataset, CadRecodeDataset
 
 
 class PrintToFileCallback(TrainerCallback):
@@ -21,19 +21,10 @@ class PrintToFileCallback(TrainerCallback):
                 f.write(str(logs) + '\n')
 
 
-def run(text2cad_path, cadrecode_path, log_path):
-    processor = AutoProcessor.from_pretrained(
-        'Qwen/Qwen2-VL-2B-Instruct', 
-        min_pixels=256 * 28 * 28, 
-        max_pixels=1280 * 28 * 28,
-        padding_side='left')
-
-    text_dataset = Text2CADDataset(
-        root_dir=text2cad_path,
-        split='train')
-    
-    img_pc_dataset = CadRecodeDataset(
-        root_dir=cadrecode_path,
+def run(data_path, log_path, mode, use_text):
+    cad_recode_path = os.path.join(data_path, 'cad-recode-v1.5')
+    train_dataset = CadRecodeDataset(
+        root_dir=cad_recode_path,
         split='train',
         n_points=256,
         normalize_std_pc=100,
@@ -42,11 +33,16 @@ def run(text2cad_path, cadrecode_path, log_path):
         normalize_std_img=200,
         noise_scale_img=-1,
         num_imgs=4,
-        mode='pc_img')
+        mode=mode)
     
-    train_dataset = ConcatDataset([img_pc_dataset, text_dataset])
+    if use_text:
+        text_dataset = Text2CADDataset(
+            root_dir=os.path.join(data_path, 'text2cad'),
+            split='train')
+        train_dataset = ConcatDataset([train_dataset, text_dataset])
+    
     eval_dataset = CadRecodeDataset(
-        root_dir=cadrecode_path,
+        root_dir=cad_recode_path,
         split='val',
         n_points=256,
         normalize_std_pc=100,
@@ -55,8 +51,13 @@ def run(text2cad_path, cadrecode_path, log_path):
         normalize_std_img=200,
         noise_scale_img=-1,
         num_imgs=4,
-        mode='pc_img')
+        mode=mode)
     
+    processor = AutoProcessor.from_pretrained(
+        'Qwen/Qwen2-VL-2B-Instruct', 
+        min_pixels=256 * 28 * 28, 
+        max_pixels=1280 * 28 * 28,
+        padding_side='left')
     model = Cadrille.from_pretrained(
         'Qwen/Qwen2-VL-2B-Instruct',
         torch_dtype=torch.bfloat16,
@@ -92,8 +93,10 @@ def run(text2cad_path, cadrecode_path, log_path):
 
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('--text2cad-path', type=str, default='./data/text2cad')
-    parser.add_argument('--cad-recode-path', type=str, default='./data/cad-recode')
+    parser.add_argument('--data-path', type=str, default='./data')
     parser.add_argument('--log-path', type=str, default='./work_dirs')
+    parser.add_argument('--mode', type=str, default='pc_img')
+    parser.add_argument('--use-text', action='store_true')
+
     args = parser.parse_args()
-    run(args.text2cad_path, args.cad_recode_path, args.log_path)
+    run(args.data_path, args.log_path, args.mode, args.use_text)

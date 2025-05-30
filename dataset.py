@@ -139,11 +139,14 @@ class CadRecodeDataset(Dataset):
         if self.num_imgs == 1:
             images = [images[0]]
         elif self.num_imgs == 2:
-            images = [Image.fromarray(np.hstack((np.array(images[0]), 
-                                                 np.array(images[1]))))]
+            images = [Image.fromarray(np.hstack((
+                np.array(images[0]), np.array(images[1])
+            )))]
         elif self.num_imgs == 4:
-            images = [Image.fromarray(np.vstack((np.hstack((np.array(images[0]), np.array(images[1]))),
-                                  np.hstack((np.array(images[2]), np.array(images[3]))))))]
+            images = [Image.fromarray(np.vstack((
+                np.hstack((np.array(images[0]), np.array(images[1]))),
+                np.hstack((np.array(images[2]), np.array(images[3])))
+            )))]
         else:
             raise ValueError(f'Invalid number of images: {self.num_imgs}')
 

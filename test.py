@@ -7,8 +7,8 @@ import torch
 from transformers import AutoProcessor
 from torch.utils.data import DataLoader, ConcatDataset
 
-from .cadrille import Cadrille, collate
-from .dataset import Text2CADDataset, CadRecodeDataset
+from cadrille import Cadrille, collate
+from dataset import Text2CADDataset, CadRecodeDataset
 
 
 def run(data_path, split, mode, checkpoint_path, py_path):
@@ -29,7 +29,9 @@ def run(data_path, split, mode, checkpoint_path, py_path):
         padding_side='left')
 
     if mode == 'text':
-        dataset = Text2CADDataset(root_dir=data_path, split='test')
+        dataset = Text2CADDataset(
+            root_dir=os.path.join(data_path, 'text2cad'),
+            split='test')
     else:  # mode in ('pc', 'img')
         dataset = CadRecodeDataset(
             root_dir=data_path,
@@ -41,7 +43,7 @@ def run(data_path, split, mode, checkpoint_path, py_path):
             normalize_std_img=200,
             noise_scale_img=-1,
             num_imgs=4,
-            mode='pc')
+            mode=mode)
 
     n_samples = 1
     counter = 0
@@ -79,7 +81,7 @@ if __name__ == '__main__':
     parser.add_argument('--data-path', type=str, default='./data')
     parser.add_argument('--split', type=str, default='deepcad_test_mesh')
     parser.add_argument('--mode', type=str, default='pc')
-    parser.add_argument('--checkpoint-path', type=str, default='col14m/cadrille')
-    parser.add_argument('--py-path', type=str, default='./work_dirs/tmp')
+    parser.add_argument('--checkpoint-path', type=str, default='maksimko123/cadrille')
+    parser.add_argument('--py-path', type=str, default='./work_dirs/tmp_py')
     args = parser.parse_args()
     run(args.data_path, args.split, args.mode, args.checkpoint_path, args.py_path)

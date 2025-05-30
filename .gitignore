@@ -1,4 +1,6 @@
-data/cad-recode
+.vscode
+__pycache__
+data/cad-recode-v1.5
 data/text2cad
 data/deepcad_test_mesh
 data/fusion360_test_mesh
