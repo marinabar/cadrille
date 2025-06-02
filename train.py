@@ -34,13 +34,17 @@ def run(data_path, log_path, mode, use_text):
         noise_scale_img=-1,
         num_imgs=4,
         mode=mode)
-    
+    batch_size = 15
+    accumulation_steps = 2
+
     if use_text:
         text_dataset = Text2CADDataset(
             root_dir=os.path.join(data_path, 'text2cad'),
             split='train')
         train_dataset = ConcatDataset([train_dataset, text_dataset])
-    
+        batch_size = 8
+        accumulation_steps = 4
+  
     eval_dataset = CadRecodeDataset(
         root_dir=cad_recode_path,
         split='val',
@@ -66,14 +70,14 @@ def run(data_path, log_path, mode, use_text):
         model=model,
         args=TrainingArguments(
             output_dir=log_path,
-            per_device_train_batch_size=8,
+            per_device_train_batch_size=batch_size,
             dataloader_num_workers=18,
             max_steps=120000,
             lr_scheduler_type='cosine',
             learning_rate=2e-4,
             warmup_steps=1000,
             weight_decay=0.01,
-            gradient_accumulation_steps=4,
+            gradient_accumulation_steps=accumulation_steps,
             remove_unused_columns=False,
             logging_steps=1000,
             save_total_limit=2,

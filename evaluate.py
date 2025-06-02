@@ -87,7 +87,7 @@ def py_file_to_mesh_and_brep_files_safe(py_path, mesh_path, brep_path):
         process.join()
 
 
-def run_cd_single(py_file_name, pred_py_path, pred_mesh_path, pred_brep_path, gt_mesh_path, n_points, normalize_std):
+def run_cd_single(py_file_name, pred_py_path, pred_mesh_path, pred_brep_path, gt_mesh_path, n_points):
     eval_file_name = py_file_name[:py_file_name.rfind('+')]
     py_path = os.path.join(pred_py_path, py_file_name)
     mesh_path = os.path.join(pred_mesh_path, py_file_name[:-3] + '.stl')
@@ -97,7 +97,11 @@ def run_cd_single(py_file_name, pred_py_path, pred_mesh_path, pred_brep_path, gt
     cd, iou = None, None
     try:  # apply_transform fails for some reason; or mesh path can not exist
         pred_mesh = trimesh.load_mesh(mesh_path)
-        pred_mesh.apply_transform(trimesh.transformations.scale_matrix(1 / normalize_std / 2))
+        center = (pred_mesh.bounds[0] + pred_mesh.bounds[1]) / 2.0
+        pred_mesh.apply_translation(-center)
+        extent = np.max(pred_mesh.extents)
+        if extent > 1e-7:
+            pred_mesh.apply_scale(1.0 / extent)
         pred_mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
         gt_mesh = trimesh.load_mesh(os.path.join(gt_mesh_path, eval_file_name + '.stl'))
         cd = compute_chamfer_distance(gt_mesh, pred_mesh, n_points)
@@ -109,7 +113,7 @@ def run_cd_single(py_file_name, pred_py_path, pred_mesh_path, pred_brep_path, gt
     return dict(file_name=eval_file_name, id=index, cd=cd, iou=iou)
 
 
-def run(gt_mesh_path, pred_py_path, n_points, normalize_std):
+def run(gt_mesh_path, pred_py_path, n_points):
     pred_mesh_path = os.path.join(os.path.dirname(pred_py_path), 'tmp_mesh')
     pred_brep_path = os.path.join(os.path.dirname(pred_py_path), 'tmp_brep')
     best_names_path = os.path.join(os.path.dirname(pred_py_path), 'tmp.txt')
@@ -129,8 +133,7 @@ def run(gt_mesh_path, pred_py_path, n_points, normalize_std):
                 pred_mesh_path=pred_mesh_path,
                 pred_brep_path=pred_brep_path,
                 gt_mesh_path=gt_mesh_path,
-                n_points=n_points,
-                normalize_std=normalize_std),
+                n_points=n_points),
             py_file_names), total=len(py_file_names)))
 
     # aggregate metrics per eval_file_name
@@ -182,7 +185,5 @@ if __name__ == '__main__':
     parser.add_argument('--gt-mesh-path', type=str, default='./data/deepcad_test_mesh')
     parser.add_argument('--pred-py-path', type=str, default='./work_dirs/tmp_py')
     parser.add_argument('--n-points', type=int, default=8192)
-    parser.add_argument('--normalize_std', type=float, default=100)
     args = parser.parse_args()
-    run(
-        args.gt_mesh_path, args.pred_py_path, args.n_points, args.normalize_std)
+    run(args.gt_mesh_path, args.pred_py_path, args.n_points)

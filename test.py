@@ -32,6 +32,7 @@ def run(data_path, split, mode, checkpoint_path, py_path):
         dataset = Text2CADDataset(
             root_dir=os.path.join(data_path, 'text2cad'),
             split='test')
+        batch_size = 32
     else:  # mode in ('pc', 'img')
         dataset = CadRecodeDataset(
             root_dir=data_path,
@@ -44,12 +45,13 @@ def run(data_path, split, mode, checkpoint_path, py_path):
             noise_scale_img=-1,
             num_imgs=4,
             mode=mode)
+        batch_size = 256
 
     n_samples = 1
     counter = 0
     dataloader = DataLoader(
         dataset=ConcatDataset([dataset] * n_samples),
-        batch_size=64,
+        batch_size=batch_size,
         num_workers=16,
         collate_fn=partial(collate, processor=processor, n_points=256, eval=True))
 
