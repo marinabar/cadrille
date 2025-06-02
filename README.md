@@ -2,10 +2,10 @@
 
 **News**:
  * :fire: May, 2025. `cadrille` is state-of-the-art in three CAD reconstruction benchmarks: <br>
-  DeepCAD paperswithcode <br>
-  Fusion360 paperswithcode <br>
-  CC3D paperswithcode
-
+  DeepCAD [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/cadrille-multi-modal-cad-reconstruction-with/cad-reconstruction-on-deepcad)](https://paperswithcode.com/sota/cad-reconstruction-on-deepcad?p=cadrille-multi-modal-cad-reconstruction-with) <br>
+  Fusion360 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/cadrille-multi-modal-cad-reconstruction-with/cad-reconstruction-on-fusion-360-gallery)](https://paperswithcode.com/sota/cad-reconstruction-on-fusion-360-gallery?p=cadrille-multi-modal-cad-reconstruction-with) <br>
+  CC3D [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/cadrille-multi-modal-cad-reconstruction-with/cad-reconstruction-on-cc3d)](https://paperswithcode.com/sota/cad-reconstruction-on-cc3d?p=cadrille-multi-modal-cad-reconstruction-with) <br>
+ 
 This repository contains an implementation of `cadrille`, a multi-modal (point clouds / images / text) 3D CAD reconstruction method introduced in our paper:
 
 > **cadrille: Multi-modal CAD Reconstruction with Online Reinforcement Learning**<br>
