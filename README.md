@@ -67,3 +67,8 @@ If you find this work useful for your research, please cite our paper:
   year={2025}
 }
 ```
+
+### Acknowledgments
+
+<span>This work was supported by [Artificial Intelligence Research Institute](https://airi.net/?force=en) <img src="https://github.com/user-attachments/assets/c6304076-153a-4e3b-b58c-db522f7f78fe" width="50"/></span>
+
