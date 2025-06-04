@@ -2,17 +2,25 @@ import os
 
 import numpy as np
 import wandb
-from grpo import selective_log_softmax
 
 os.environ["PYGLET_HEADLESS"] = "True"
 
 import torch
+from torch import nn
 from torch.utils.data import DataLoader
 import torch.distributed as dist
 import torch.nn.functional as F
 
 from utils import evaluate_model_mm
 from dataset_utils import IndexBuffer
+
+
+def selective_log_softmax(logits, input_ids):
+    """
+    Computes log probabilities for specific tokens in the vocabulary.
+    """
+    log_probs = nn.functional.log_softmax(logits, dim=-1)
+    return log_probs.gather(dim=-1, index=input_ids.unsqueeze(-1)).squeeze(-1)
 
 
 def compute_log_probs(model, batch, logits_to_keep):

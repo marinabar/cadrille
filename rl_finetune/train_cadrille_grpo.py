@@ -29,6 +29,8 @@ from qwen_vl_utils import process_vision_info
 
 @dataclass
 class TrainConfig:
+    sft_path: str
+
     project: str = "CAD_test"
     group: str = "Dr-CCPO"
     name: str = "dr-ccpo"
@@ -182,7 +184,7 @@ def main(config: TrainConfig):
     attn_implementation = 'flash_attention_2' if torch.cuda.is_available() else None
 
     model = Cadrille.from_pretrained(
-        f'/home/jovyan/tarasov/checkpoint_3m',
+        config.sft_path,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
         device_map=rank).train().to(rank)
