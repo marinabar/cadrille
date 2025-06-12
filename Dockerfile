@@ -1,7 +1,7 @@
 FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
 RUN apt-get update \
-    && apt-get install -y git git-lsf wget libgl1-mesa-glx libosmesa6-dev libglu1-mesa-dev
+    && apt-get install -y git git-lfs wget libgl1-mesa-glx libosmesa6-dev libglu1-mesa-dev
 
 RUN git clone https://github.com/isl-org/Open3D.git \
     && cd Open3D \
