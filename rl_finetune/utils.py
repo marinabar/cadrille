@@ -149,10 +149,10 @@ except:
     print("IOU Failed to compute IoU", flush=True)
 """
     text = code_prefix + text + code_suffix
-    print("SRC")
+    #print("SRC")
     #print(text)
 
-    print("END", flush=True)
+    #print("END", flush=True)
     try:
         r = run_code_with_timeout(text, timeout=10)
         #print("RESULT of code", r, flush=True)
