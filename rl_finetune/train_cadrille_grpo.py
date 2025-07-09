@@ -197,9 +197,9 @@ def main(config: TrainConfig):
                                               max_pixels=1280 * 28 * 28,
                                               padding_side="left")
 
-    eval_data_deepcad = RealDatasetMM(path=f'./data/deepcad_test', file_name='test.pkl', n_points=256, size=1000)
-    eval_data_fusion = RealDatasetMM(path=f'./data/fusion360_test', file_name='test.pkl', n_points=256, size=1000)
-    train_data = RealDatasetMM(path=f'./data/deepcad_fusion_train', file_name=config.train_file, n_points=256, mode=config.train_mode, noise_scale_pc=0.01, size=config.train_size)
+    eval_data_deepcad = RealDatasetMM(path=f'/home/jovyan/tarasov/data/deepcad_fusion_train', file_name='test.pkl', n_points=256, size=1000)
+    eval_data_fusion = RealDatasetMM(path=f'/home/jovyan/tarasov/data/fusion360_test', file_name='test.pkl', n_points=256, size=1000)
+    train_data = RealDatasetMM(path=f'/home/jovyan/tarasov/data/deepcad_fusion_train', file_name=config.train_file, n_points=256, mode=config.train_mode, noise_scale_pc=0.01, size=config.train_size)
 
     # text_train_dataset = Text2CADDataset(path=f'/home/jovyan/tarasov/data/deepcad_fusion_train', file_name='text_train.pkl', idx_offset=len(train_data))
     # text_eval_dataset = Text2CADDataset(path=f'/home/jovyan/tarasov/data/deepcad_test', file_name='text_test.pkl')
