@@ -126,7 +126,7 @@ def generate_rollout_data(model, reward_function,
             dtype=torch.float32,
             device=model.device
         )
-        # print("Rewards", rewards, flush=True)
+        print("Rewards", rewards, flush=True)
 
         batch_size = len(prompts['input_ids'])
         num_generations = num_generations
@@ -145,6 +145,7 @@ def generate_rollout_data(model, reward_function,
         buffer.add_many(dataset_indices)
 
         abs_adv = torch.abs(rewards - mean_rewards.view(batch_size, num_generations))
+        # gets the indices of the top samples based on absolute advantages
         _, top_indices = torch.topk(abs_adv, top_samples, dim=1)
 
         row_indices = torch.arange(batch_size).unsqueeze(1).expand(-1, top_samples).to(model.device)

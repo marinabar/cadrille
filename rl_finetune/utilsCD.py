@@ -121,10 +121,8 @@ def run_code_with_timeout(code, timeout=5):
     process.join(timeout)
 
     if process.is_alive():
-        print("Timout while running code", flush=True)
         process.terminate()  # Kill the process
         process.join()
-
         raise RuntimeError("Execution timed out")
 
     return queue.get()  # Get the result
@@ -140,13 +138,13 @@ try:
     gt_mesh = transform_real_mesh(trimesh.load_mesh('{mesh_path}'))
     pred_mesh = transform_real_mesh(tessellate(r.val()))
     try:
-        iou = compute_iou(pred_mesh, gt_mesh)
+        iou = compute_cd(pred_mesh, gt_mesh)
     except:
         iou = -1
-    print("IOU", iou, flush=True)
+    print("CD", iou, flush=True)
 except:
     pass
-    print("IOU Failed to compute IoU", flush=True)
+    print("CD Failed to compute CD", flush=True)
 """
     text = code_prefix + text + code_suffix
     print("SRC")
@@ -154,9 +152,7 @@ except:
 
     print("END", flush=True)
     try:
-        r = run_code_with_timeout(text, timeout=10)
-        #print("RESULT of code", r, flush=True)
-        return r
+        return run_code_with_timeout(text, timeout=10)
         # exec(text, globals())
     except:
         return None
@@ -173,6 +169,7 @@ def extract_mesh_from_texts(texts, meshes, max_workers=10):
     Returns:
         list: A list of meshes (or None for failed processes).
     """
+    print(f"Extracting meshes from {len(texts)} texts with {max_workers} workers", flush=True)
     results = []
     if max_workers is None:
         max_workers = os.cpu_count()

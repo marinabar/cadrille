@@ -44,11 +44,14 @@ class TrainConfig:
     # GRPO params
     train_epochs: int = 20
     batch_size: int = 16
+    # how many outputs the old policy generates
     num_generations: int = 16
+    # how many samples to choose for loss computation
     top_samples: int = 4
     max_completion_length: int = 400
     learning_rate: float = 3e-5
     batch_updates: int = 3
+    # clipping epsilon values
     epsilon_high: float = 0.1
     epsilon_low: float = 0.1
 
@@ -218,7 +221,7 @@ def main(config: TrainConfig):
     dist.barrier()
     part_collate = partial(collate_img_pc_v1, processor=processor, n_points=256)
 
-
+    """
     if rank == 0:
         print("\nInitial model evaluation before finetuning and after filtering:")
         eval_data_deepcad.mode = 'pc'
@@ -231,6 +234,8 @@ def main(config: TrainConfig):
         ious_f_im, cds_f_im, incorrect_f_im, failed_intersect_f_im = evaluate_model_mm(model.module, processor, eval_data_fusion, rank, part_collate, batch_size=200)
 
         # ious_txt, cds_txt, incorrect_txt, failed_intersect_txt = evaluate_model_mm(model.module, processor, text_eval_dataset, rank, part_collate, batch_size=50)
+    """
+    ious, cds, incorrect, ious_f, cds_f, incorrect_f, ious_im, cds_im, incorrect_im, ious_f_im, cds_f_im, incorrect_f_im = np.zeros(12, dtype=np.float32) 
     dist.barrier()
 
     print("\nStarting RL fine-tuning using GRPO...")
