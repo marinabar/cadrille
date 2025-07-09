@@ -150,7 +150,7 @@ except:
 """
     text = code_prefix + text + code_suffix
     print("SRC")
-    print(text)
+    #print(text)
 
     print("END", flush=True)
     try:
