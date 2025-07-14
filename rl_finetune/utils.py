@@ -32,6 +32,9 @@ class NonDaemonPool(Pool):
 import numpy as np
 import torch
 
+
+os.environ["PYGLET_HEADLESS"] = "True"
+
 import cadquery as cq
 
 import trimesh
@@ -150,10 +153,14 @@ def get_metrics_from_single_text(text, gt_file, pred_mesh_path, pred_brep_path, 
     pred_mesh_dir = os.path.abspath(pred_mesh_path)
     pred_brep_dir = os.path.abspath(pred_brep_path)
 
+    gt_file = os.path.abspath(gt_file)
+    pred_mesh_dir = os.path.abspath(pred_mesh_path)
+    pred_brep_dir = os.path.abspath(pred_brep_path)
+
     base_file = os.path.basename(gt_file).rsplit('.stl', 1)[0]
 
-    #print(f"computing metrics for file: {gt_file}", flush=True)
-    #print(f"saving temp mesh to: {pred_mesh_dir}", flush=True)
+    print(f"computing metrics for file: {gt_file}")
+    print(f"saving temp mesh to: {pred_mesh_dir}")
 
     mesh_path = os.path.abspath(os.path.join(pred_mesh_dir, base_file + '.stl'))
     brep_path = os.path.abspath(os.path.join(pred_brep_dir, base_file + '.step'))
@@ -167,30 +174,43 @@ def get_metrics_from_single_text(text, gt_file, pred_mesh_path, pred_brep_path, 
 
     cd, iou = None, None
     try:  # apply_transform fails for some reason; or mesh path can not exist
-        gt_mesh = trimesh.load_mesh(gt_file)
+        
+        gt_mesh = trimesh.load_mesh(gt_file, 
+            force='mesh',
+            file_type='stl',
+            encoding='binary')
 
         gt_mesh = transform_gt_mesh(gt_mesh)
-        
-        #print("Loaded and normalized ground truth", flush=True)
-        
+
+        pred_mesh = trimesh.load_mesh(mesh_path,
+            force='mesh',
+            file_type='stl',
+            encoding='binary')
         pred_mesh = transform_pred_mesh(pred_mesh)
-        #print("Normalizing prediction", flush=True)
 
         
 
         cd = compute_cd(gt_mesh, pred_mesh, n_points)
         iou = compute_iou(gt_mesh, pred_mesh)
-        p#rint(f"CD {cd} IoU {iou}", flush=True)
+        print(f"loaded ground truth mesh from {gt_file}", flush=True)
+        print(f"loaded predicted mesh from {mesh_path}", flush=True)
+        print(f"CD {cd} IoU {iou}", flush=True)
 
 
     except Exception as e:
+        print(f"error getting the metric : {e}")
         pass
     
     return dict(file_name=base_file, cd=cd, iou=iou)
 
 
 from multiprocessing import get_context
+from multiprocessing import get_context
 def get_metrics_from_texts(texts, meshes, max_workers=None):
+
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+    
 
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
@@ -214,13 +234,21 @@ def get_metrics_from_texts(texts, meshes, max_workers=None):
     os.makedirs(pred_mesh_path, exist_ok=True)
     os.makedirs(pred_brep_path, exist_ok=True)
 
+    pred_mesh_path = os.path.join(temp_path, 'tmp_mesh')
+    pred_brep_path = os.path.join(temp_path, 'tmp_brep')
+
+    os.makedirs(pred_mesh_path, exist_ok=True)
+    os.makedirs(pred_brep_path, exist_ok=True)
+
     n_points = 8192
     results = []
     if max_workers is None:
         max_workers = os.cpu_count()
 
     ctx = get_context("spawn")
+    ctx = get_context("spawn")
     
+    with NonDaemonPool(processes=max_workers, context=ctx) as pool:
     with NonDaemonPool(processes=max_workers, context=ctx) as pool:
         results = list(tqdm(pool.starmap(
             partial(
@@ -301,11 +329,17 @@ def evaluate_model_mm(model, processor, eval_examples, device, collate_fn, batch
             pred_metrics = get_metrics_from_texts(decoded_texts, batch["mesh_path"])
             for metrics in pred_metrics:
                 if metrics is None or metrics["iou"] is None:
+            pred_metrics = get_metrics_from_texts(decoded_texts, batch["mesh_path"])
+            for metrics in pred_metrics:
+                if metrics is None or metrics["iou"] is None:
                     n_incorrect += 1
                     continue
                 if metrics["iou"] < 0:
+                if metrics["iou"] < 0:
                     n_failed_intersect += 1
                 else:
+                    ious.append(metrics["iou"])
+                    cds.append(metrics["cd"])
                     ious.append(metrics["iou"])
                     cds.append(metrics["cd"])
 
@@ -318,6 +352,14 @@ def evaluate_model_mm(model, processor, eval_examples, device, collate_fn, batch
     model.train()
     return ious, cds, n_incorrect / len(eval_examples), n_failed_intersect / len(eval_examples)
 
+def transform_real_mesh(mesh):
+    if mesh is None:
+        return None
+    if mesh.bounds is None:
+        return mesh
+    mesh.apply_translation(-(mesh.bounds[0] + mesh.bounds[1]) / 2.0)  # shift to center
+    mesh.apply_scale(2.0 / max(mesh.extents))  # Normalize to [-1, 1]
+    return mesh
 def transform_real_mesh(mesh):
     if mesh is None:
         return None
@@ -341,6 +383,8 @@ def transform_gt_mesh(mesh):
 
 
 
+
+
 def transform_pred_mesh(mesh):
     if mesh is None:
         return None
@@ -357,12 +401,20 @@ def compound_to_mesh(compound):
     return trimesh.Trimesh([(v.x, v.y, v.z) for v in vertices], faces)
 
 
+
+safe_var = {
+"cq": cq,
+}
+
 def code_to_mesh_and_brep(code_str, mesh_path, brep_path):
 
 
-    #print(f"executing code {code_str}")
+    print(f"executing code {code_str}")
     # saves mesh and brep files from code string 
     try:
+        ns = safe_var.copy()
+        exec(code_str, ns)
+        compound = ns['r'].val()
         ns = safe_var.copy()
         exec(code_str, ns)
         compound = ns['r'].val()
@@ -375,18 +427,33 @@ def code_to_mesh_and_brep(code_str, mesh_path, brep_path):
         print("error executing the python code and exporting the mesh:", e)
         return
 
+def build_mesh(code_str, queue):
 
-safe_ns = {"cq": cq}
-
-def code_to_mesh_and_brep_less_safe(code_str, mesh_path, brep_path):
-    ns=safe_ns.copy()
-    #print(f"Executing code {code_str}")
+    print(f"executing code {code_str}")
+    # saves mesh and brep files from code string 
     try:
+        ns = safe_var.copy()
         exec(code_str, ns)
-        mesh = compound_to_mesh(ns["r"].val())
-        # export files if needed
-        # mesh.export(mesh_path)
-        return mesh
+        compound = ns['r'].val()
+        mesh = compound_to_mesh(compound)
+        assert len(mesh.faces) > 2
+        queue.put(mesh) 
+        print("mesh saved successfully")
+        # cq.exporters.export(compound, brep_path)
     except Exception as e:
-        print(f"Error executing CadQuery code : {e}")
-        return None
+        print("error executing the python code and getting the mesh:", e)
+        return
+
+
+def code_to_mesh_and_brep_safe(py_path, mesh_path, brep_path):
+    ctx = get_context("spawn")
+    process = ctx.Process(
+        target=code_to_mesh_and_brep,
+        args=(py_path, mesh_path, brep_path))
+    process.start()
+    process.join(60)
+
+    if process.is_alive():
+        print('process alive:', py_path)
+        process.terminate()
+        process.join()
