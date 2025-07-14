@@ -3,6 +3,28 @@ import multiprocessing
 import os
 import random
 
+from collections import defaultdict
+from argparse import ArgumentParser
+from multiprocessing import Process
+from multiprocessing.pool import Pool
+from functools import partial
+
+class NonDaemonProcess(Process):
+    def _get_daemon(self):
+        return False
+
+    def _set_daemon(self, value):
+        pass
+
+    daemon = property(_get_daemon, _set_daemon)
+
+
+class NonDaemonPool(Pool):
+    def Process(self, *args, **kwargs):
+        proc = super(NonDaemonPool, self).Process(*args, **kwargs)
+        proc.__class__ = NonDaemonProcess
+        return proc
+
 # CAD recode imports
 import numpy as np
 import torch
@@ -60,6 +82,25 @@ def tessellate(compound):
     import trimesh
     vertices, faces = compound.tessellate(0.001, 0.1)
     mesh = trimesh.Trimesh([(v.x, v.y, v.z) for v in vertices], faces)
+    return mesh
+
+def transform_gt_mesh(mesh):
+    if mesh is None:
+        return None
+    if mesh.bounds is None:
+        return mesh
+    mesh.apply_translation(-(mesh.bounds[0] + mesh.bounds[1]) / 2.0)  # shift to center
+    mesh.apply_scale(1.0 / max(mesh.extents))  # Normalize to [0, 1]
+    mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
+    return mesh
+
+def transform_pred_mesh(mesh):
+    if mesh is None:
+        return None
+    if mesh.bounds is None:
+        return mesh
+    mesh.apply_scale(1.0 / 200)  # Normalize to [0, 1]
+    mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
     return mesh
 
 """
@@ -130,88 +171,85 @@ def run_code_with_timeout(code, timeout=5):
     return queue.get()  # Get the result
 
 
-def extract_mesh_from_text(text, mesh_path):
-    # print("TMP FILE:", tmp_file_name, flush=True)
+def get_metrics_from_single_text(text, gt_file, pred_mesh_path, pred_brep_path, n_points):
 
-    code_suffix = f"""
-iou = -1
-try:
-    import trimesh
-    gt_mesh = transform_real_mesh(trimesh.load_mesh('{mesh_path}'))
-    pred_mesh = transform_real_mesh(tessellate(r.val()))
-    try:
-        iou = compute_iou(pred_mesh, gt_mesh)
+    base_file = os.path.basename(gt_file).rsplit('.stl', 1)[0]
+
+    mesh_path = os.path.join(pred_mesh_path, os.path.basename(gt_file))
+    brep_path = os.path.join(pred_brep_path, base_file + '.step')
+
+    # runs the python code and saves the mesh and brep files
+    code_to_mesh_and_brep_safe(text, mesh_path, brep_path)
+    
+    cd, iou = None, None
+    try:  # apply_transform fails for some reason; or mesh path can not exist
+        pred_mesh = trimesh.load_mesh(mesh_path)
+        # do not normalize predicted mesh
+        #pred_mesh = transform_pred_mesh(pred_mesh)
+        
+        gt_mesh = trimesh.load_mesh(gt_file)
+        gt_mesh = transform_gt_mesh(gt_mesh)
+        cd = compute_cd(gt_mesh, pred_mesh, n_points)
+        iou = compute_iou(gt_mesh, pred_mesh)
     except:
-        iou = -1
-    print("IOU", iou, flush=True)
-except:
-    pass
-    print("IOU Failed to compute IoU", flush=True)
-"""
-    text = code_prefix + text + code_suffix
-    #print("SRC")
-    #print(text)
-
-    #print("END", flush=True)
-    try:
-        r = run_code_with_timeout(text, timeout=10)
-        #print("RESULT of code", r, flush=True)
-        return r
-        # exec(text, globals())
-    except:
-        return None
+        pass
+    
+    return dict(file_name=base_file, cd=cd, iou=iou)
 
 
-def extract_mesh_from_texts(texts, meshes, max_workers=10):
+def get_metrics_from_texts(texts, meshes, max_workers=None):
     """
     Processes a list of texts in parallel, assigning a unique id to each to avoid temp file conflicts.
 
     Args:
-        texts (list of str): The texts to process.
+        texts (list of str): The generated texts to process.
+        meshes (list of str): The paths to the meshes corresponding to each text.
         max_workers (int, optional): Number of parallel workers.
 
     Returns:
         list: A list of meshes (or None for failed processes).
     """
+    temp_path = "./tmp_data"
+    pred_mesh_path = os.path.join(os.path.dirname(temp_path), 'tmp_mesh')
+    pred_brep_path = os.path.join(os.path.dirname(temp_path), 'tmp_brep')
+    n_points = 8192
     results = []
     if max_workers is None:
         max_workers = os.cpu_count()
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Submit tasks with a unique id generated via enumerate.
-        future_to_id = {
-            executor.submit(extract_mesh_from_text, text, mesh): idx
-            for idx, (text, mesh) in enumerate(zip(texts, meshes))
-        }
-        collected_results = {}
-        for future in concurrent.futures.as_completed(future_to_id):
-            unique_id = future_to_id[future]
-            try:
-                collected_results[unique_id] = future.result()
-            except Exception as exc:
-                print(f"Text with id {unique_id} generated an exception: {exc}")
-                collected_results[unique_id] = None
-    results = [collected_results[idx] for idx in range(len(texts))]
+    
+    with NonDaemonPool(max_workers) as pool:
+        results = list(tqdm(pool.starmap(
+            partial(
+                get_metrics_from_single_text,
+                pred_mesh_path=pred_mesh_path,
+                pred_brep_path=pred_brep_path,
+                n_points=n_points),
+                zip(texts, meshes)), total=len(meshes)))
+
     return results
 
 
-def compute_iou(pred_mesh, gt_mesh):
-    intersection_volume = 0
-    for gt_mesh_i in gt_mesh.split():
-        for pred_mesh_i in pred_mesh.split():
-            intersection = gt_mesh_i.intersection(pred_mesh_i)
-            volume = intersection.volume if intersection is not None else 0
-            intersection_volume += volume
 
-    gt_volume = sum(m.volume for m in gt_mesh.split())
-    pred_volume = sum(m.volume for m in pred_mesh.split())
-    union_volume = gt_volume + pred_volume - intersection_volume
-    iou = intersection_volume / (union_volume + 1e-6)
-    return iou
+def compute_iou(gt_mesh, pred_mesh):
+    try:
+        intersection_volume = 0
+        for gt_mesh_i in gt_mesh.split():
+            for pred_mesh_i in pred_mesh.split():
+                intersection = gt_mesh_i.intersection(pred_mesh_i)
+                volume = intersection.volume if intersection is not None else 0
+                intersection_volume += volume
+        
+        gt_volume = sum(m.volume for m in gt_mesh.split())
+        pred_volume = sum(m.volume for m in pred_mesh.split())
+        union_volume = gt_volume + pred_volume - intersection_volume
+        assert union_volume > 0
+        return intersection_volume / union_volume
+    except:
+        pass
 
 
-def compute_cd(pred_mesh, gt_mesh):
-    n_points = 8192
+def compute_cd(pred_mesh, gt_mesh, n_points=8192):
     gt_points, _ = trimesh.sample.sample_surface(gt_mesh, n_points)
     pred_points, _ = trimesh.sample.sample_surface(pred_mesh, n_points)
     gt_distance, _ = cKDTree(gt_points).query(pred_points, k=1)
@@ -222,16 +260,6 @@ def compute_cd(pred_mesh, gt_mesh):
 
 def compute_metrics(pred_mesh, gt_mesh):
     return compute_cd(pred_mesh, gt_mesh), compute_iou(pred_mesh, gt_mesh)
-
-
-def transform_real_mesh(mesh):
-    if mesh is None:
-        return None
-    if mesh.bounds is None:
-        return mesh
-    mesh.apply_translation(-(mesh.bounds[0] + mesh.bounds[1]) / 2.0)  # shift to center
-    mesh.apply_scale(2.0 / max(mesh.extents))  # Normalize to [-1, 1]
-    return mesh
 
 
 def evaluate_model_mm(model, processor, eval_examples, device, collate_fn, batch_size=8):
@@ -267,7 +295,7 @@ def evaluate_model_mm(model, processor, eval_examples, device, collate_fn, batch
             )
 
             decoded_texts = py_strings
-            pred_ious = extract_mesh_from_texts(decoded_texts, batch["mesh_path"])
+            pred_ious = get_metrics_from_texts(decoded_texts, batch["mesh_path"])
             for i, pred_iou in enumerate(pred_ious):
                 if pred_iou is None:
                     n_incorrect += 1
@@ -285,3 +313,54 @@ def evaluate_model_mm(model, processor, eval_examples, device, collate_fn, batch
 
     model.train()
     return ious, cds, n_incorrect / len(eval_examples), n_failed_intersect / len(eval_examples)
+
+
+def transform_gt_mesh(mesh):
+    if mesh is None:
+        return None
+    if mesh.bounds is None:
+        return mesh
+    mesh.apply_translation(-(mesh.bounds[0] + mesh.bounds[1]) / 2.0)  # shift to center
+    extent = np.max(mesh.extents)
+    if extent > 1e-7:
+            mesh.apply_scale(1.0 / extent)
+    mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
+    return mesh
+
+def transform_pred_mesh(mesh):
+    if mesh is None:
+        return None
+    if mesh.bounds is None:
+        return mesh
+    mesh.apply_scale(1.0 / 200)  # Normalize to [0, 1]
+    mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
+    return mesh
+
+
+
+########## evaluate functions ##########
+def compound_to_mesh(compound):
+    vertices, faces = compound.tessellate(0.001, 0.1)
+    return trimesh.Trimesh([(v.x, v.y, v.z) for v in vertices], faces)
+
+
+def code_to_mesh_and_brep(code_str, mesh_path, brep_path):
+    # saves mesh and brep files from code string 
+    try:
+        exec(code_str, globals())
+        compound = globals()['r'].val()
+        mesh = compound_to_mesh(compound)
+        assert len(mesh.faces) > 2
+        mesh.export(mesh_path)
+        # cq.exporters.export(compound, brep_path)
+    except:
+        pass
+
+
+def code_to_mesh_and_brep_safe(code_str, mesh_path, brep_path):
+    p = Process(target=code_to_mesh_and_brep, args=(code_str, mesh_path, brep_path))
+    p.start()
+    p.join(3)
+    if p.is_alive():
+        p.terminate()
+        p.join()
