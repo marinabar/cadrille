@@ -82,6 +82,8 @@ def generate_completions(model, processor, inputs, num_generations=4, max_comple
         pixel_values_videos = pixel_values_videos.repeat_interleave(num_generations, dim=0)
     if video_grid_thw is not None:
         video_grid_thw = video_grid_thw.repeat_interleave(num_generations, dim=0)
+
+    print(f"Generating {num_generations} completions for each of {batch_size} prompts.", flush=True)
     outputs = model.generate(input_ids=prompt_ids.clone(),
                              attention_mask=prompt_mask.clone(),
                              point_clouds=point_cloud.clone(),
@@ -120,7 +122,7 @@ def generate_rollout_data(model, reward_function,
 
         formatted_completions = [processor.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False) for ids in completion_ids]
         repeated_answers = [a for a in batch_samples['mesh_path'] for _ in range(num_generations)]
-
+        print("getting rewards", flush=True)
         rewards = torch.tensor(
             reward_function(completions=formatted_completions, answer=repeated_answers),
             dtype=torch.float32,

@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.distributed.elastic.multiprocessing.errors import record
+import torch.multiprocessing as mp
 
 from utils import evaluate_model_mm
 from dataset_utils import IndexBuffer
@@ -58,12 +59,14 @@ def reward_inference_worker(queue, model, processor, train_data, config, rank):
     reward_fn = get_reward_function(config.failure_reward)
 
     for epoch in range(config.train_epochs):
+        print(f"Generator (Rank {rank}): Starting epoch {epoch + 1}/{config.train_epochs}.")
         sampler.set_epoch(epoch)
         for batch in loader:
             # synchronize the model parameters from GPU 1
+            print(f"Generator (Rank {rank}): Synchronizing model parameters.")
             for param in model.parameters():
                 dist.broadcast(param.data, src=1)
-
+            print(f"Generator (Rank {rank}): starting to generate rollouts.")
             rollout, avg_reward = generate_rollout_data(
                 model,
                 reward_fn,
@@ -75,6 +78,8 @@ def reward_inference_worker(queue, model, processor, train_data, config, rank):
                 gpg=config.use_gpg,
                 buffer = None)
             
+            print(f"Generator (Rank {rank}): Epoch {epoch + 1} Avg Reward: {avg_reward:.4f}")
+
             payload = {
                 IPCKeys.INPUT_IDS: rollout["input_ids"].cpu(),
                 IPCKeys.ATT_MASK: rollout["attention_mask"].cpu(),
@@ -101,9 +106,9 @@ def reward_inference_worker(queue, model, processor, train_data, config, rank):
 def trainer_worker(queue, model, processor, config, rank, run_id):
 
     """GPU 1: compute loss, update model, evaluate."""
+    print(f"Starting Trainer (Rank {rank}) ")
     torch.cuda.set_device(rank)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
-    wandb.init(id=run_id, resume="allow")
 
     step = 0
     loss_fn = partial(grpo_loss, processor=processor,epsilon_high=config.epsilon_high, epsilon_low=config.epsilon_low)
@@ -114,9 +119,6 @@ def trainer_worker(queue, model, processor, config, rank, run_id):
     for epoch in range(config.train_epochs):
         print(f"Trainer (Rank {rank}): Starting epoch {epoch + 1}/{config.train_epochs}.")
         while True:
-            for param in model.module.parameters():
-                dist.broadcast(param.data, src=rank)
-                # Wait to receive from the generator
 
             payload = queue.get()
             if payload is None:
@@ -148,6 +150,9 @@ def trainer_worker(queue, model, processor, config, rank, run_id):
             print(f"Epoch {epoch + 1}, Step {step+1}, Avg Reward: {avg_reward:.4f}, Loss: {loss.item():.4f}")
             step += 1  
 
+            for param in model.module.parameters():
+                dist.broadcast(param.data, src=rank)
+                # Wait to receive from the generator
     if rank == 1:
         wandb.finish()
     return
@@ -155,20 +160,17 @@ def trainer_worker(queue, model, processor, config, rank, run_id):
 
 
 
-@record
-@pyrallis.wrap()
-def main(config: TrainConfig):
 
-    rank = int(os.environ.get("LOCAL_RANK"))
-    world_size = int(os.environ.get("WORLD_SIZE"))
+def main(
+    rank: int, world_size: int, queue, config: TrainConfig, ):
+
+    os.environ["LOCAL_RANK"] = str(rank)
+    os.environ["WORLD_SIZE"]    = str(world_size)
 
     assert world_size == 2, "Use --nproc_per_node=2"
 
     setup(world_size)
     torch.cuda.set_device(rank)
-
-    mgr= Manager()
-    queue = mgr.Queue(maxsize=2)
 
     attn_implementation = 'flash_attention_2' if torch.cuda.is_available() else None
 
@@ -190,20 +192,11 @@ def main(config: TrainConfig):
 
     model = optimize_model_memory(model)
 
+    if rank == 1:
+        model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
-    print("\nStarting RL fine-tuning using GRPO...")
-    training_config = {
-        'train_epochs': config.train_epochs,
-        'batch_size': config.batch_size,  # reduce if you have fewer GPUs
-        'num_generations': config.num_generations,  # reduce if you have GPUs with less VRAM
-        'top_samples': config.top_samples,  # reduce if you have GPUs with less VRAM
-        'max_completion_length': config.max_completion_length,  # reduce if you have GPUs with less VRAM
-        'learning_rate': config.learning_rate,
-        'batch_updates': config.batch_updates,
-        'epsilon_high': config.epsilon_high,
-        'epsilon_low': config.epsilon_low,
-    }
-    
+
+    print(f"\nRank {rank}: Starting RL fine-tuning using GRPO…")
 
     if rank == 0:
         reward_inference_worker(
@@ -218,14 +211,29 @@ def main(config: TrainConfig):
             reinit=True,
         )
         run_id = run.id
-        model = DDP(model, device_ids=[rank], find_unused_parameters=True)
         trainer_worker(
             queue, model, processor, config, rank, run_id
         )
     cleanup()
     print("Training completed.")
 
-if __name__ == "__main__":
-    main()
-        
+@pyrallis.wrap()
+def spawn_main(config: TrainConfig):
+    # 1) parse config exactly once
+    config = pyrallis.parse(TrainConfig)
+    world_size = 2  # or config.world_size
+    mgr = Manager()
+    queue = mgr.Queue(maxsize=2)
 
+    import torch.multiprocessing as mp
+
+    mp.set_start_method("spawn", force=True)
+    mp.spawn(
+        fn=main,
+        nprocs=world_size,
+        args=(world_size, queue, config),
+        join=True,
+    )
+
+if __name__ == "__main__":
+    spawn_main()
