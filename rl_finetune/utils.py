@@ -300,7 +300,7 @@ def code_to_mesh_and_brep(code_str, mesh_path, brep_path):
     #print(f"executing code {code_str}")
     # saves mesh and brep files from code string 
     try:
-        ns = safe_var.copy()
+        ns = safe_ns.copy()
         exec(code_str, ns)
         compound = ns['r'].val()
         mesh = compound_to_mesh(compound)
