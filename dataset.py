@@ -119,6 +119,13 @@ class CadRecodeDataset(Dataset):
         if self.split in ['train', 'val']:
             mesh.apply_transform(trimesh.transformations.scale_matrix(1 / self.normalize_std_img))
             mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
+        else:
+            mesh.apply_translation(-(mesh.bounds[0] + mesh.bounds[1]) / 2.0)  # shift to center
+            extent = np.max(mesh.extents)
+            if extent > 1e-7:
+                    mesh.apply_scale(1.0 / extent)
+            mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
+
 
         vertices = np.asarray(mesh.vertices)
         faces = np.asarray(mesh.faces)

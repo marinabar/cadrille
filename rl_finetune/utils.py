@@ -3,9 +3,12 @@ import multiprocessing
 import os
 import random
 
+
+os.environ["PYGLET_HEADLESS"] = "True"
+
 from collections import defaultdict
 from argparse import ArgumentParser
-from multiprocessing import Process
+from multiprocessing import Process, Queue
 from multiprocessing.pool import Pool
 from functools import partial
 
@@ -29,7 +32,7 @@ class NonDaemonPool(Pool):
 import numpy as np
 import torch
 
-os.environ["PYGLET_HEADLESS"] = "True"
+import cadquery as cq
 
 import trimesh
 from scipy.spatial import cKDTree
@@ -141,63 +144,57 @@ def set_random_seed(seed: int = 42):
     torch.backends.cudnn.benchmark = False
 
 
-def run_code(code, queue):
-    """Executes code and puts results in a queue."""
-    local_vars = {}
-    try:
-        exec(code, {}, local_vars)  # Run the code
-        exec_result = local_vars.get("iou", None)
-        queue.put(exec_result)  # Put result in queue
-    except Exception as e:
-        # queue.put(f"Error: {str(e)}")  # Send error message
-        queue.put(None)  # Send error message
-
-
-def run_code_with_timeout(code, timeout=5):
-    """Runs code with a timeout and retrieves results."""
-    queue = multiprocessing.SimpleQueue()
-    process = multiprocessing.Process(target=run_code, args=(code, queue))
-
-    process.start()
-    process.join(timeout)
-
-    if process.is_alive():
-        print("Timout while running code", flush=True)
-        process.terminate()  # Kill the process
-        process.join()
-
-        raise RuntimeError("Execution timed out")
-
-    return queue.get()  # Get the result
-
-
 def get_metrics_from_single_text(text, gt_file, pred_mesh_path, pred_brep_path, n_points):
+
+    gt_file = os.path.abspath(gt_file)
+    pred_mesh_dir = os.path.abspath(pred_mesh_path)
+    pred_brep_dir = os.path.abspath(pred_brep_path)
 
     base_file = os.path.basename(gt_file).rsplit('.stl', 1)[0]
 
-    mesh_path = os.path.join(pred_mesh_path, os.path.basename(gt_file))
-    brep_path = os.path.join(pred_brep_path, base_file + '.step')
+    #print(f"computing metrics for file: {gt_file}", flush=True)
+    #print(f"saving temp mesh to: {pred_mesh_dir}", flush=True)
+
+    mesh_path = os.path.abspath(os.path.join(pred_mesh_dir, base_file + '.stl'))
+    brep_path = os.path.abspath(os.path.join(pred_brep_dir, base_file + '.step'))
 
     # runs the python code and saves the mesh and brep files
-    code_to_mesh_and_brep_safe(text, mesh_path, brep_path)
-    
+    pred_mesh = code_to_mesh_and_brep_less_safe(text, mesh_path, brep_path)
+
+    if pred_mesh is None:
+        print("Skipping metrics: invalid prediction mesh", flush=True)
+        return dict(file_name=base_file, cd=None, iou=None)
+
     cd, iou = None, None
     try:  # apply_transform fails for some reason; or mesh path can not exist
-        pred_mesh = trimesh.load_mesh(mesh_path)
-        # do not normalize predicted mesh
-        #pred_mesh = transform_pred_mesh(pred_mesh)
-        
         gt_mesh = trimesh.load_mesh(gt_file)
+
         gt_mesh = transform_gt_mesh(gt_mesh)
+        
+        #print("Loaded and normalized ground truth", flush=True)
+        
+        pred_mesh = transform_pred_mesh(pred_mesh)
+        #print("Normalizing prediction", flush=True)
+
+        
+
         cd = compute_cd(gt_mesh, pred_mesh, n_points)
         iou = compute_iou(gt_mesh, pred_mesh)
-    except:
+        p#rint(f"CD {cd} IoU {iou}", flush=True)
+
+
+    except Exception as e:
         pass
     
     return dict(file_name=base_file, cd=cd, iou=iou)
 
 
+from multiprocessing import get_context
 def get_metrics_from_texts(texts, meshes, max_workers=None):
+
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+    
     """
     Processes a list of texts in parallel, assigning a unique id to each to avoid temp file conflicts.
 
@@ -209,16 +206,22 @@ def get_metrics_from_texts(texts, meshes, max_workers=None):
     Returns:
         list: A list of meshes (or None for failed processes).
     """
+
     temp_path = "./tmp_data"
-    pred_mesh_path = os.path.join(os.path.dirname(temp_path), 'tmp_mesh')
-    pred_brep_path = os.path.join(os.path.dirname(temp_path), 'tmp_brep')
+    pred_mesh_path = os.path.join(temp_path, 'tmp_mesh')
+    pred_brep_path = os.path.join(temp_path, 'tmp_brep')
+
+    os.makedirs(pred_mesh_path, exist_ok=True)
+    os.makedirs(pred_brep_path, exist_ok=True)
+
     n_points = 8192
     results = []
     if max_workers is None:
         max_workers = os.cpu_count()
 
+    ctx = get_context("spawn")
     
-    with NonDaemonPool(max_workers) as pool:
+    with NonDaemonPool(processes=max_workers, context=ctx) as pool:
         results = list(tqdm(pool.starmap(
             partial(
                 get_metrics_from_single_text,
@@ -295,15 +298,16 @@ def evaluate_model_mm(model, processor, eval_examples, device, collate_fn, batch
             )
 
             decoded_texts = py_strings
-            pred_ious = get_metrics_from_texts(decoded_texts, batch["mesh_path"])
-            for i, pred_iou in enumerate(pred_ious):
-                if pred_iou is None:
+            pred_metrics = get_metrics_from_texts(decoded_texts, batch["mesh_path"])
+            for metrics in pred_metrics:
+                if metrics is None or metrics["iou"] is None:
                     n_incorrect += 1
                     continue
-                if pred_iou < 0:
+                if metrics["iou"] < 0:
                     n_failed_intersect += 1
                 else:
-                    ious.append(pred_iou)
+                    ious.append(metrics["iou"])
+                    cds.append(metrics["cd"])
 
     print(f"IoU mean {np.mean(ious)}, median {np.median(ious)}")
     print(f"CD mean {np.mean(cds)}, median {np.median(cds)}")
@@ -314,6 +318,14 @@ def evaluate_model_mm(model, processor, eval_examples, device, collate_fn, batch
     model.train()
     return ious, cds, n_incorrect / len(eval_examples), n_failed_intersect / len(eval_examples)
 
+def transform_real_mesh(mesh):
+    if mesh is None:
+        return None
+    if mesh.bounds is None:
+        return mesh
+    mesh.apply_translation(-(mesh.bounds[0] + mesh.bounds[1]) / 2.0)  # shift to center
+    mesh.apply_scale(2.0 / max(mesh.extents))  # Normalize to [-1, 1]
+    return mesh
 
 def transform_gt_mesh(mesh):
     if mesh is None:
@@ -327,6 +339,8 @@ def transform_gt_mesh(mesh):
     mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
     return mesh
 
+
+
 def transform_pred_mesh(mesh):
     if mesh is None:
         return None
@@ -337,7 +351,6 @@ def transform_pred_mesh(mesh):
     return mesh
 
 
-
 ########## evaluate functions ##########
 def compound_to_mesh(compound):
     vertices, faces = compound.tessellate(0.001, 0.1)
@@ -345,22 +358,35 @@ def compound_to_mesh(compound):
 
 
 def code_to_mesh_and_brep(code_str, mesh_path, brep_path):
+
+
+    #print(f"executing code {code_str}")
     # saves mesh and brep files from code string 
     try:
-        exec(code_str, globals())
-        compound = globals()['r'].val()
+        ns = safe_var.copy()
+        exec(code_str, ns)
+        compound = ns['r'].val()
         mesh = compound_to_mesh(compound)
         assert len(mesh.faces) > 2
         mesh.export(mesh_path)
+        print("mesh exported successfully")
         # cq.exporters.export(compound, brep_path)
-    except:
-        pass
+    except Exception as e:
+        print("error executing the python code and exporting the mesh:", e)
+        return
 
 
-def code_to_mesh_and_brep_safe(code_str, mesh_path, brep_path):
-    p = Process(target=code_to_mesh_and_brep, args=(code_str, mesh_path, brep_path))
-    p.start()
-    p.join(3)
-    if p.is_alive():
-        p.terminate()
-        p.join()
+safe_ns = {"cq": cq}
+
+def code_to_mesh_and_brep_less_safe(code_str, mesh_path, brep_path):
+    ns=safe_ns.copy()
+    #print(f"Executing code {code_str}")
+    try:
+        exec(code_str, ns)
+        mesh = compound_to_mesh(ns["r"].val())
+        # export files if needed
+        # mesh.export(mesh_path)
+        return mesh
+    except Exception as e:
+        print(f"Error executing CadQuery code : {e}")
+        return None

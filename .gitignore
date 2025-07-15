@@ -5,6 +5,7 @@ data/text2cad
 data/deepcad_test_mesh
 data/fusion360_test_mesh
 work_dirs
-*/wandb
+*wandb
 */models
-training_log.txt
+*/logs
+*/tmp_data

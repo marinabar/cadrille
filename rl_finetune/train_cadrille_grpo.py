@@ -12,7 +12,7 @@ from transformers import AutoProcessor
 
 from dataset_utils import RealDatasetMM
 from grpo_mm import train_with_grpo_mm
-from utils import extract_mesh_from_texts, \
+from utils import get_metrics_from_texts, \
     evaluate_model_mm
 
 os.environ["PYGLET_HEADLESS"] = "True"
@@ -129,16 +129,17 @@ def get_reward_function(failure_reward):
         # Get individual rewards
         rewards = []
         # excepts = []
-        pred_ious = extract_mesh_from_texts(completions, answer)
+        pred_metrics = get_metrics_from_texts(completions, answer, max_workers=25)
         # print("MESHES", pred_meshes, flush=True)
-        for i, pred_iou in enumerate(pred_ious):
+        for m in pred_metrics:
             reward = 0
-            if pred_iou is None:
+            iou = m["iou"] if m is not None else None
+            if iou is None:
                 reward = failure_reward
-            elif pred_iou < 0:
+            elif iou < 0:
                 reward = 0
             else:
-                reward = pred_iou * 10
+                reward = iou * 10
             rewards.append(reward)
         return rewards
     return combined_reward
@@ -221,6 +222,7 @@ def main(config: TrainConfig):
     dist.barrier()
     part_collate = partial(collate_img_pc_v1, processor=processor, n_points=256)
 
+
     """
     if rank == 0:
         print("\nInitial model evaluation before finetuning and after filtering:")
@@ -233,8 +235,8 @@ def main(config: TrainConfig):
         eval_data_fusion.mode = 'img'
         ious_f_im, cds_f_im, incorrect_f_im, failed_intersect_f_im = evaluate_model_mm(model.module, processor, eval_data_fusion, rank, part_collate, batch_size=200)
 
-        # ious_txt, cds_txt, incorrect_txt, failed_intersect_txt = evaluate_model_mm(model.module, processor, text_eval_dataset, rank, part_collate, batch_size=50)
-    """
+        # ious_txt, cds_txt, incorrect_txt, failed_intersect_txt = evaluate_model_mm(model.module, processor, text_eval_dataset, rank, part_collate, batch_size=50)"""
+    
     ious, cds, incorrect, ious_f, cds_f, incorrect_f, ious_im, cds_im, incorrect_im, ious_f_im, cds_f_im, incorrect_f_im = np.zeros(12, dtype=np.float32) 
     dist.barrier()
 
