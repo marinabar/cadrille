@@ -129,7 +129,7 @@ def get_reward_function(failure_reward):
         # Get individual rewards
         rewards = []
         # excepts = []
-        pred_metrics = get_metrics_from_texts(completions, answer, max_workers=25)
+        pred_metrics = get_metrics_from_texts(completions, answer, max_workers=24)
         # print("MESHES", pred_meshes, flush=True)
         for m in pred_metrics:
             reward = 0

@@ -40,73 +40,7 @@ from scipy.spatial import cKDTree
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-
-code_prefix = """
-import cadquery as cq
-import numpy as np
-import trimesh
-from scipy.spatial import cKDTree
-
-
-def compute_iou(pred_mesh, gt_mesh):
-    intersection_volume = 0
-    for gt_mesh_i in gt_mesh.split():
-        for pred_mesh_i in pred_mesh.split():
-            intersection = gt_mesh_i.intersection(pred_mesh_i)
-            volume = intersection.volume if intersection is not None else 0
-            intersection_volume += volume
-
-    gt_volume = sum(m.volume for m in gt_mesh.split())
-    pred_volume = sum(m.volume for m in pred_mesh.split())
-    union_volume = gt_volume + pred_volume - intersection_volume
-    iou = intersection_volume / (union_volume + 1e-6)
-    return iou
-
-def compute_cd(pred_mesh, gt_mesh):
-    n_points = 8192
-    gt_points, _ = trimesh.sample.sample_surface(gt_mesh, n_points)
-    pred_points, _ = trimesh.sample.sample_surface(pred_mesh, n_points)
-    gt_distance, _ = cKDTree(gt_points).query(pred_points, k=1)
-    pred_distance, _ = cKDTree(pred_points).query(gt_points, k=1)
-    cd = np.mean(np.square(gt_distance)) + np.mean(np.square(pred_distance))
-    return cd
-
-def transform_real_mesh(mesh):
-    if mesh is None:
-        return None
-    if mesh.bounds is None:
-        return mesh
-    mesh.apply_translation(-(mesh.bounds[0] + mesh.bounds[1]) / 2.0)  # shift to center
-    mesh.apply_scale(2.0 / max(mesh.extents))  # Normalize to [-1, 1]
-    return mesh
-
-def tessellate(compound):
-    # compound = cq.importers.importStep(tmp_file_name).val()
-    import trimesh
-    vertices, faces = compound.tessellate(0.001, 0.1)
-    mesh = trimesh.Trimesh([(v.x, v.y, v.z) for v in vertices], faces)
-    return mesh
-
-def transform_gt_mesh(mesh):
-    if mesh is None:
-        return None
-    if mesh.bounds is None:
-        return mesh
-    mesh.apply_translation(-(mesh.bounds[0] + mesh.bounds[1]) / 2.0)  # shift to center
-    mesh.apply_scale(1.0 / max(mesh.extents))  # Normalize to [0, 1]
-    mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
-    return mesh
-
-def transform_pred_mesh(mesh):
-    if mesh is None:
-        return None
-    if mesh.bounds is None:
-        return mesh
-    mesh.apply_scale(1.0 / 200)  # Normalize to [0, 1]
-    mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
-    return mesh
-
-"""
+from normal_consistency import compute_normals_metrics
 
 def set_random_seed(seed: int = 42):
     """
@@ -152,7 +86,7 @@ def get_metrics_from_single_text(text, gt_file, pred_mesh_path, pred_brep_path, 
 
     base_file = os.path.basename(gt_file).rsplit('.stl', 1)[0]
 
-    #print(f"computing metrics for file: {gt_file}", flush=True)
+    print(f"computing metrics for file: {gt_file}", flush=True)
     #print(f"saving temp mesh to: {pred_mesh_dir}", flush=True)
 
     mesh_path = os.path.abspath(os.path.join(pred_mesh_dir, base_file + '.stl'))
@@ -163,9 +97,9 @@ def get_metrics_from_single_text(text, gt_file, pred_mesh_path, pred_brep_path, 
 
     if pred_mesh is None:
         print("Skipping metrics: invalid prediction mesh", flush=True)
-        return dict(file_name=base_file, cd=None, iou=None)
+        return dict(file_name=base_file, cd=None, iou=None, auc=None, mean_cos=None)
 
-    cd, iou = None, None
+    cd, iou, auc, mean_cos = None, None, None, None
     try:  # apply_transform fails for some reason; or mesh path can not exist
         gt_mesh = trimesh.load_mesh(gt_file)
 
@@ -180,13 +114,16 @@ def get_metrics_from_single_text(text, gt_file, pred_mesh_path, pred_brep_path, 
 
         cd = compute_cd(gt_mesh, pred_mesh, n_points)
         iou = compute_iou(gt_mesh, pred_mesh)
-        p#rint(f"CD {cd} IoU {iou}", flush=True)
+        auc, mean_cos, _ = compute_normals_metrics(
+                pred_mesh, gt_mesh, tol=2
+            )
+        print(f"CD {cd} IoU {iou} AUC {auc} Mean Cos {mean_cos}", flush=True)
 
 
     except Exception as e:
         pass
     
-    return dict(file_name=base_file, cd=cd, iou=iou)
+    return dict(file_name=base_file, cd=cd, iou=iou, auc=auc, mean_cos=mean_cos)
 
 
 from multiprocessing import get_context
@@ -298,7 +235,7 @@ def evaluate_model_mm(model, processor, eval_examples, device, collate_fn, batch
             )
 
             decoded_texts = py_strings
-            pred_metrics = get_metrics_from_texts(decoded_texts, batch["mesh_path"])
+            pred_metrics = get_metrics_from_texts(decoded_texts, batch["mesh_path"], max_workers=24)
             for metrics in pred_metrics:
                 if metrics is None or metrics["iou"] is None:
                     n_incorrect += 1
