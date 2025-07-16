@@ -1,14 +1,10 @@
-import concurrent
-import multiprocessing
 import os
 import random
 
 
 os.environ["PYGLET_HEADLESS"] = "True"
 
-from collections import defaultdict
-from argparse import ArgumentParser
-from multiprocessing import Process, Queue
+from multiprocessing import Process
 from multiprocessing.pool import Pool
 from functools import partial
 
@@ -121,6 +117,7 @@ def get_metrics_from_single_text(text, gt_file, pred_mesh_path, pred_brep_path, 
 
 
     except Exception as e:
+        print(f"error for {base_file}: {e}", flush=True)
         pass
     
     return dict(file_name=base_file, cd=cd, iou=iou, auc=auc, mean_cos=mean_cos)
@@ -313,9 +310,10 @@ def code_to_mesh_and_brep(code_str, mesh_path, brep_path):
         return
 
 
-safe_ns = {"cq": cq}
 
 def code_to_mesh_and_brep_less_safe(code_str, mesh_path, brep_path):
+    import cadquery as cq
+    safe_ns = {"cq": cq}
     ns=safe_ns.copy()
     #print(f"Executing code {code_str}")
     try:

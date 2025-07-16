@@ -139,12 +139,13 @@ def generate_rollout_data(model, reward_function,
         print("Average Reward:", avg_reward)
         mean_rewards = rewards.mean(dim=1).repeat_interleave(num_generations)
 
-        # Expand buffer
-        buffer_expand_size = batch_size // 2
-        std_rewards = rewards.std(dim=1).view(-1)
-        std_vals, std_indices = torch.topk(std_rewards, buffer_expand_size)
-        dataset_indices = [batch_samples['idx'][int(i)] for i in std_indices]
-        buffer.add_many(dataset_indices)
+        if buffer:
+            # Expand buffer
+            buffer_expand_size = batch_size // 2
+            std_rewards = rewards.std(dim=1).view(-1)
+            std_vals, std_indices = torch.topk(std_rewards, buffer_expand_size)
+            dataset_indices = [batch_samples['idx'][int(i)] for i in std_indices]
+            buffer.add_many(dataset_indices)
 
         abs_adv = torch.abs(rewards - mean_rewards.view(batch_size, num_generations))
         # gets the indices of the top samples based on absolute advantages
