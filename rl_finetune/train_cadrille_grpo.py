@@ -56,6 +56,8 @@ class TrainConfig:
     use_gpg: bool = False
     use_buffer: bool = False
 
+    num_reward_works : int = 1
+
 
 def collate_img_pc_v1(batch, processor, n_points, eval=False):
     messages = []
@@ -128,7 +130,7 @@ def get_reward_function(failure_reward):
         rewards = []
         # excepts = []
         pred_metrics = get_metrics_from_texts(
-            completions, answer, max_workers=24)
+            completions, answer, max_workers=23)
         # print("MESHES", pred_meshes, flush=True)
         for m in pred_metrics:
             reward = 0

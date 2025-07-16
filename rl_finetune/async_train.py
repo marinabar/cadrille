@@ -5,6 +5,8 @@ from functools import partial
 from multiprocessing import Manager
 from queue import Empty
 
+import time
+
 import pyrallis
 import wandb
 import torch
@@ -16,7 +18,7 @@ from torch.distributed.elastic.multiprocessing.errors import record
 import torch.multiprocessing as mp
 
 #from utils import evaluate_model_mm
-from dataset_utils import IndexBuffer
+#from dataset_utils import IndexBuffer
 
 from grpo_mm import generate_rollout_data, grpo_loss
 from train_cadrille_grpo import TrainConfig, collate_img_pc_v1, get_reward_function, optimize_model_memory, setup, cleanup
@@ -50,11 +52,13 @@ def reward_inference_worker(queue, model, processor, train_data, config, rank):
     sampler = DistributedSampler(train_data, num_replicas=2, rank=rank, shuffle=True)
 
     reward_fn = get_reward_function(config.failure_reward)
+    step = 0
 
+    dataloader = DataLoader(train_data, batch_size=config.batch_size, collate_fn=partial(collate_img_pc_v1, processor=processor, n_points=256), sampler=sampler,
+                                num_workers=23)
+    
     for epoch in range(config.train_epochs):
 
-        dataloader = DataLoader(train_data, batch_size=config.batch_size, collate_fn=partial(collate_img_pc_v1, processor=processor, n_points=256), sampler=sampler,
-                                num_workers=23)
 
         print(f"Generator (Rank {rank}): Starting epoch {epoch + 1}/{config.train_epochs}.")
         sampler.set_epoch(epoch)
@@ -63,7 +67,7 @@ def reward_inference_worker(queue, model, processor, train_data, config, rank):
             print(f"Generator (Rank {rank}): Synchronizing model parameters.")
             for param in model.parameters():
                 dist.broadcast(param.data, src=1)
-            print(f"Generator (Rank {rank}): starting to generate rollouts.")
+            print(f"Generating rollouts for batch {step + 1}/{len(dataloader)}")
             rollout, avg_reward = generate_rollout_data(
                 model,
                 reward_fn,
@@ -93,14 +97,18 @@ def reward_inference_worker(queue, model, processor, train_data, config, rank):
             if rollout.get("pixel_values_videos") is not None:
                 payload[IPCKeys.PIXEL_VALUES_VIDEOS] = rollout["pixel_values_videos"].cpu()
                 payload[IPCKeys.VIDEO_GRID_THW] = rollout["video_grid_thw"].cpu()
+            
 
+            t0 = time.perf_counter()
             queue.put(payload)
+            wait = time.perf_counter() - t0 
+            print(f"STEP {step} - waiting time to put to queue {wait}")
 
         # Signal to trainer that the epoch is finished
         queue.put(None)
     print(f"Generator (Rank {rank}): All epochs complete.")
 
-def trainer_worker(queue, model, processor, config, rank, run_id):
+def trainer_worker(queue, model, processor, config, rank):
 
     """GPU 1: compute loss, update model, evaluate."""
     print(f"Starting Trainer (Rank {rank}) ")
@@ -113,8 +121,16 @@ def trainer_worker(queue, model, processor, config, rank, run_id):
 
     loss_fn = partial(grpo_loss, processor=processor,epsilon_high=config.epsilon_high, epsilon_low=config.epsilon_low, reward_function=reward_function)
 
-    if rank == 1:
-        wandb.init(id=run_id, resume="allow", project=config.project, group=config.group, name=config.name)
+    
+    run = wandb.init(
+        project=config.project,
+        group=config.group,
+        name=config.name,
+        config=asdict(config),
+        reinit=True,
+    )
+
+    os.environ["WANDB_RUN_ID"] = run.id
     
     for param in model.parameters():
         dist.broadcast(param.data, src=1)
@@ -122,16 +138,37 @@ def trainer_worker(queue, model, processor, config, rank, run_id):
     for epoch in range(config.train_epochs):
         print(f"Trainer (Rank {rank}): Starting epoch {epoch + 1}/{config.train_epochs}.")
         while True:
-
+            t0 = time.perf_counter()
             payload = queue.get()
+            wait = time.perf_counter() - t0 
+            print(f"waiting time to get sample from queue {wait}")
+            wandb.log({
+                "step": step,
+                "queue_wait":wait,
+
+            })
             if payload is None:
                 print(f"Trainer (Rank {rank}): Received end-of-epoch signal.")
                 break  # End of epoch
             
+
+
+            t0 = time.perf_counter()
+
             rollout_data = {
                 key: (val.to(rank, non_blocking=True) if isinstance(val, torch.Tensor) else val)
                 for key, val in payload.items()
             }
+
+
+            wait = time.perf_counter() - t0 
+            print(f"waiting time to move rollout data {wait}")
+            wandb.log({
+                "step": step,
+                "move_rollout_to_gpu_wait":wait,
+
+            })
+
             print(f"Trainer (Rank {rank}): received data from Generator")
 
             avg_reward = rollout_data.pop(IPCKeys.AVG_REWARD, None)
@@ -151,14 +188,15 @@ def trainer_worker(queue, model, processor, config, rank, run_id):
                     "epoch": epoch + 1,
                 })
 
-                print(f"Epoch {epoch + 1}/{config.train_epochs}, Step {step + 1}/{len(dataloader)}, "
-                        f"GRPO iter {grpo_iter + 1}/{batch_updates}, loss: {loss.item():.4f}")
+                print(f"Epoch {epoch + 1}/{config.train_epochs}, Step {step + 1}, "
+                        f"GRPO iter {grpo_iter + 1}/{config.batch_updates}, loss: {loss.item():.4f}", flush=True)
+                
             del rollout_data
             torch.cuda.empty_cache()
            
 
             wandb.log({"average_reward": avg_reward, "step": step, "epoch": epoch + 1})
-            print(f"Epoch {epoch + 1}, Step {step+1}, Avg Reward: {avg_reward:.4f}, Loss: {loss.item():.4f}")
+            print(f"Epoch {epoch + 1}, Step {step+1}, Avg Reward: {avg_reward:.4f}, Loss: {loss.item():.4f}", flush=True)
             step += 1  
 
             for param in model.parameters():
@@ -210,6 +248,7 @@ def main(
 
     print(f"\nRank {rank}: Starting RL fine-tuning using GRPO…")
 
+
     if rank == 0:
         print(f"Rank {rank}: Starting reward inference worker", flush=True)
         reward_inference_worker(
@@ -217,16 +256,8 @@ def main(
         )
     else:
         print(f"Rank {rank}: Starting trainer worker", flush=True)
-        run = wandb.init(
-            project=config.project,
-            group=config.group,
-            name=config.name,
-            config=asdict(config),
-            reinit=True,
-        )
-        run_id = run.id
         trainer_worker(
-            queue, model, processor, config, rank, run_id
+            queue, model, processor, config, rank
         )
     cleanup()
     print("Training completed.")
@@ -237,7 +268,8 @@ def spawn_main(config: TrainConfig):
     mp.set_start_method("spawn", force=True)
 
     os.environ["MASTER_ADDR"] = "127.0.0.1"
-    os.environ["MASTER_PORT"] = "1244"
+    os.environ["MASTER_PORT"] = "1245"
+    
     # 1) parse config exactly once
     world_size = 2  # or config.wo rld_size
     with Manager() as mgr:
@@ -250,5 +282,5 @@ def spawn_main(config: TrainConfig):
         )
 
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "4,5"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2,7"
     spawn_main()
