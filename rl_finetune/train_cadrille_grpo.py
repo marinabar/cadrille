@@ -1,4 +1,10 @@
 # CAD recode imports
+from qwen_vl_utils import process_vision_info
+from torch.utils.data import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+import numpy as np
+import torch
+import torch.distributed as dist
 import os
 from dataclasses import asdict, dataclass
 from datetime import timedelta
@@ -17,14 +23,6 @@ from utils import get_metrics_from_texts, \
 
 os.environ["PYGLET_HEADLESS"] = "True"
 os.environ["TOKENIZERS_PARALLELISM"] = "True"
-
-import torch.distributed as dist
-import torch
-import numpy as np
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DistributedSampler
-
-from qwen_vl_utils import process_vision_info
 
 
 @dataclass
@@ -129,7 +127,8 @@ def get_reward_function(failure_reward):
         # Get individual rewards
         rewards = []
         # excepts = []
-        pred_metrics = get_metrics_from_texts(completions, answer, max_workers=24)
+        pred_metrics = get_metrics_from_texts(
+            completions, answer, max_workers=24)
         # print("MESHES", pred_meshes, flush=True)
         for m in pred_metrics:
             reward = 0
@@ -143,6 +142,7 @@ def get_reward_function(failure_reward):
             rewards.append(reward)
         return rewards
     return combined_reward
+
 
 def optimize_model_memory(model):
     """
@@ -167,12 +167,17 @@ def optimize_model_memory(model):
 
 def setup(world_size):
     """ Initialize the process group for distributed training """
-    dist.init_process_group(backend="nccl", world_size=world_size, timeout=timedelta(hours=5))
+    dist.init_process_group(
+        backend="nccl",
+        world_size=world_size,
+        timeout=timedelta(
+            hours=5))
 
 
 def cleanup():
     """ Destroy the process group """
     dist.destroy_process_group()
+
 
 @record
 @pyrallis.wrap()
@@ -198,9 +203,23 @@ def main(config: TrainConfig):
                                               max_pixels=1280 * 28 * 28,
                                               padding_side="left")
 
-    eval_data_deepcad = RealDatasetMM(path=f'/home/jovyan/users/zhemchuzhnikov/tarasov/data/deepcad_test', file_name='test.pkl', n_points=256, size=1000)
-    eval_data_fusion = RealDatasetMM(path=f'/home/jovyan/users/zhemchuzhnikov/tarasov/data/fusion360_test', file_name='test.pkl', n_points=256, size=1000)
-    train_data = RealDatasetMM(path=f'/home/jovyan/users/zhemchuzhnikov/tarasov/data/deepcad_fusion_train', file_name=config.train_file, n_points=256, mode=config.train_mode, noise_scale_pc=0.01, size=config.train_size)
+    eval_data_deepcad = RealDatasetMM(
+        path=f'/home/jovyan/users/zhemchuzhnikov/tarasov/data/deepcad_test',
+        file_name='test.pkl',
+        n_points=256,
+        size=1000)
+    eval_data_fusion = RealDatasetMM(
+        path=f'/home/jovyan/users/zhemchuzhnikov/tarasov/data/fusion360_test',
+        file_name='test.pkl',
+        n_points=256,
+        size=1000)
+    train_data = RealDatasetMM(
+        path=f'/home/jovyan/users/zhemchuzhnikov/tarasov/data/deepcad_fusion_train',
+        file_name=config.train_file,
+        n_points=256,
+        mode=config.train_mode,
+        noise_scale_pc=0.01,
+        size=config.train_size)
 
     # text_train_dataset = Text2CADDataset(path=f'/home/jovyan/tarasov/data/deepcad_fusion_train', file_name='text_train.pkl', idx_offset=len(train_data))
     # text_eval_dataset = Text2CADDataset(path=f'/home/jovyan/tarasov/data/deepcad_test', file_name='text_test.pkl')
@@ -220,8 +239,10 @@ def main(config: TrainConfig):
 
     model = DDP(model, device_ids=[rank], find_unused_parameters=True)
     dist.barrier()
-    part_collate = partial(collate_img_pc_v1, processor=processor, n_points=256)
-
+    part_collate = partial(
+        collate_img_pc_v1,
+        processor=processor,
+        n_points=256)
 
     """
     if rank == 0:
@@ -236,28 +257,39 @@ def main(config: TrainConfig):
         ious_f_im, cds_f_im, incorrect_f_im, failed_intersect_f_im = evaluate_model_mm(model.module, processor, eval_data_fusion, rank, part_collate, batch_size=200)
 
         # ious_txt, cds_txt, incorrect_txt, failed_intersect_txt = evaluate_model_mm(model.module, processor, text_eval_dataset, rank, part_collate, batch_size=50)"""
-    
-    ious, cds, incorrect, ious_f, cds_f, incorrect_f, ious_im, cds_im, incorrect_im, ious_f_im, cds_f_im, incorrect_f_im = np.zeros(12, dtype=np.float32) 
+
+    ious, cds, incorrect, ious_f, cds_f, incorrect_f, ious_im, cds_im, incorrect_im, ious_f_im, cds_f_im, incorrect_f_im = np.zeros(
+        12, dtype=np.float32)
     dist.barrier()
 
     print("\nStarting RL fine-tuning using GRPO...")
     training_config = {
         'train_epochs': config.train_epochs,
         'batch_size': config.batch_size,  # reduce if you have fewer GPUs
-        'num_generations': config.num_generations,  # reduce if you have GPUs with less VRAM
+        # reduce if you have GPUs with less VRAM
+        'num_generations': config.num_generations,
         'top_samples': config.top_samples,  # reduce if you have GPUs with less VRAM
-        'max_completion_length': config.max_completion_length,  # reduce if you have GPUs with less VRAM
+        # reduce if you have GPUs with less VRAM
+        'max_completion_length': config.max_completion_length,
         'learning_rate': config.learning_rate,
         'batch_updates': config.batch_updates,
         'epsilon_high': config.epsilon_high,
         'epsilon_low': config.epsilon_low,
     }
-    sampler = DistributedSampler(train_data, num_replicas=world_size, rank=rank)
+    sampler = DistributedSampler(
+        train_data,
+        num_replicas=world_size,
+        rank=rank)
     # Initialize Weights & Biases
     run_id = None
     if rank == 0:
         dict_config = asdict(config)
-        wandb.init(project=config.project, group=config.group, name=config.name, reinit=True, config=dict_config)
+        wandb.init(
+            project=config.project,
+            group=config.group,
+            name=config.name,
+            reinit=True,
+            config=dict_config)
         print("Weights & Biases initialized.")
         run_id = wandb.run.id
 
@@ -290,7 +322,6 @@ def main(config: TrainConfig):
             # "eval/txt/DeepCAD test/CD median": np.median(cds_txt),
             # "eval/txt/DeepCAD test/Failures fraction": incorrect_txt + failed_intersect_txt,
         })
-
 
     model = train_with_grpo_mm(
         model=model,
