@@ -14,11 +14,9 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-from torch.distributed.elastic.multiprocessing.errors import record
-from torch.cuda.comm import broadcast_coalesced
 import torch.multiprocessing as mp
 
-#from utils import evaluate_model_mm
+from utils import init_pool
 #from dataset_utils import IndexBuffer
 
 from grpo_mm import generate_rollout_data, grpo_loss, compute_log_probs
@@ -28,6 +26,8 @@ from cad_recode_model_mm import Cadrille
 
 from transformers import AutoProcessor
 from dataset_utils import RealDatasetMM
+
+from utils import init_pool
 
 @dataclass
 # class to hold IPC keys, that will be transferred between processes
@@ -47,6 +47,11 @@ class IPCKeys:
 
 
 def reward_inference_worker(queue, model, processor, train_data, config, rank):
+    print("Initialized Multiprocesssing pool")
+    
+    init_pool(18)
+
+
     """GPU 0: sample rollouts, compute old log‑probs & advantages, enqueue minimal tensors."""
     torch.cuda.set_device(rank)
 
@@ -57,7 +62,7 @@ def reward_inference_worker(queue, model, processor, train_data, config, rank):
     step = 0
 
     dataloader = DataLoader(train_data, batch_size=config.batch_size // config.num_reward_workers, collate_fn=partial(collate_img_pc_v1, processor=processor, n_points=256), sampler=sampler,
-                                num_workers=23, pin_memory=True)
+                                num_workers=5, pin_memory=True)
     
     for epoch in range(config.train_epochs):
 
@@ -95,7 +100,9 @@ def reward_inference_worker(queue, model, processor, train_data, config, rank):
                 IPCKeys.IS_PC,
                 IPCKeys.IS_IMG,
                 IPCKeys.LOGITS_TO_KEEP,
-                IPCKeys.AVG_REWARD
+                IPCKeys.AVG_REWARD, 
+                IPCKeys.PIXEL_VALUES_VIDEOS,
+                IPCKeys.VIDEO_GRID_THW,
 
             ]:
                 if key in rollout:
@@ -121,12 +128,12 @@ def trainer_worker(queue, model, processor, config, rank):
     torch.cuda.set_device(rank)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 
-    step = 0
 
     reward_function = get_reward_function(config.failure_reward)
 
     loss_fn = partial(grpo_loss, processor=processor,epsilon_high=config.epsilon_high, epsilon_low=config.epsilon_low, reward_function=reward_function)
 
+    num_reward_workers = config.num_reward_workers
     
     run = wandb.init(
         project=config.project,
@@ -141,135 +148,84 @@ def trainer_worker(queue, model, processor, config, rank):
     for param in model.parameters():
         dist.broadcast(param.data, src=rank)
 
-
+    step = 0
+    optimizer.zero_grad()
     for epoch in range(config.train_epochs):
-        end_signals = 0
-        print(f"Trainer (Rank {rank}): Starting epoch {epoch + 1}/{config.train_epochs}.")
-        # Keep stepping until all generators have signaled end‑of‑epoch
 
-        while end_signals < config.num_reward_workers:
-            payloads = []
-            while len(payloads) <  config.num_reward_workers and end_signals < config.num_reward_workers:
+        print(f"Trainer (Rank {rank}): Starting epoch {epoch + 1}/{config.train_epochs}.")
+        end_signals = 0
+
+        while end_signals < num_reward_workers:
+            mini_batches = []
+            avg_rewards = []
+            while len(mini_batches) != num_reward_workers:
                 t0 = time.perf_counter()
                 item = queue.get()
                 wait = time.perf_counter() - t0 
-
-                print(f"waiting time to get sample from queue {wait}")
-
-                wandb.log({
-                    "step": step,
-                    "queue_wait":wait,
-
-                })
+                print(f"TIME to get sample from queue {wait}", flush=True)
                 if item is None:
+                    print(f"Trainer (Rank {rank}): Received end-of-epoch signal from one worker.", flush=True)
                     end_signals += 1
-                    print(f" Received end signal ({end_signals}/{config.num_reward_workers})")
-                else:
-                    payloads.append(item)
+                    continue
 
-            # if no payloads and everyone’s done, break out
-            if not payloads:
-                break
+                avg_rewards.append(item["avg_reward"])
 
-            for i, p in enumerate(payloads):
-                print(f" after pad payload[{i}].input_ids.shape = {p['input_ids'].shape}")
-
-
-
-            print(f"Trainer (Rank {rank}): received data from Generators")
-            seq_keys = [
-                IPCKeys.INPUT_IDS,
-                IPCKeys.ATT_MASK,
-                IPCKeys.COMP_MASK,
-            ]
-
-            # compute the max length along dim=1
-            max_lens = {
-                k: max(p[k].shape[1] for p in payloads)
-                for k in seq_keys
-            }
-
-            for k in seq_keys:
-                seqs = [p[k] for p in payloads]                          # list of [B_i, L_i]
-                pad_val = processor.tokenizer.pad_token_id if k == IPCKeys.INPUT_IDS else 0
-                padded = pad_sequence(seqs, batch_first=True, padding_value=pad_val)
-                # padded shape: [num_payloads, max_lens[k], ...]
-                for i, p in enumerate(payloads):
-                    p[k] = padded[i]
-
-            merged = {}
-
-            for key in [
-                IPCKeys.INPUT_IDS, IPCKeys.ATT_MASK, IPCKeys.COMP_MASK,
-                IPCKeys.ADV, IPCKeys.POINT_CLOUD,
-                IPCKeys.IS_PC, IPCKeys.IS_IMG,
-            ]:
-                merged[key] = torch.cat([p[key].to(rank, non_blocking=True)
-                                         for p in payloads], dim=0)
-
-            # optional video fields
-            for opt_key in (IPCKeys.PIXEL_VALUES_VIDEOS, IPCKeys.VIDEO_GRID_THW):
-                vals = [p.get(opt_key) for p in payloads if p.get(opt_key) is not None]
-                merged[opt_key] = torch.cat(vals, dim=0) if vals else None
-
-
-            merged[IPCKeys.LOGITS_TO_KEEP] = payloads[0][IPCKeys.LOGITS_TO_KEEP]
-
-            batch_for_logprob = (
-                merged[IPCKeys.INPUT_IDS],
-                merged[IPCKeys.ATT_MASK],
-                merged[IPCKeys.POINT_CLOUD],
-                merged[IPCKeys.IS_PC],
-                merged[IPCKeys.IS_IMG],
-                merged.get(IPCKeys.PIXEL_VALUES_VIDEOS),
-                merged.get(IPCKeys.VIDEO_GRID_THW),
-            )
-            # single unified compute
-            old_lp = compute_log_probs(
-                model,
-                batch_for_logprob,
-                merged[IPCKeys.LOGITS_TO_KEEP]
-                ).detach()  # shape [big_batch, logits_to_keep]
-            merged[IPCKeys.OLD_LOGP] = old_lp
+                mini_batches.append(item)
             
-            # keep logits_to_keep from the first payload
+            if not mini_batches:
+                print(f"Trainer (Rank {rank}): Received {num_reward_workers} end-of-epoch signals.", flush=True)
+                continue
+            # compute the average reward across that concatenated batch
+            avg_reward = sum(avg_rewards) / len(avg_rewards)
 
-            # average reward
-            avg_reward = sum(p[IPCKeys.AVG_REWARD] for p in payloads) / len(payloads)
-
-            print(f"Trainer (Rank {rank}): received data from Generator")
-
-
+            # parameter updates following the direction of the loss
             for grpo_iter in range(config.batch_updates):
-                loss = loss_fn(model=model, rollout_data=merged)
-                
+                t0 = time.perf_counter()
                 optimizer.zero_grad()
-                loss.backward()
+                total_loss_in_iter = 0
+                avg_reward = 0
+                # we want 2 “mini‑batches” before we step
+                for i in range(num_reward_workers):
+                    # move tensors to GPU
+                    rollout = {k: (v.to(rank) if isinstance(v, torch.Tensor) and not k=="avg_reward" else v)
+                                for k,v in mini_batches[i].items()}
+                    # forward + backward on this micro‑batch
+                    loss = loss_fn(model=model, rollout_data=rollout).item() / num_reward_workers
+                    total_loss_in_iter += loss
+                    # sum up gradients from two batches
+                    loss.backward()
+                
+                wait = time.perf_counter() - t0 
+                print(f"TIME to run 3 GRPO iterations on 2 mini batches{wait}", flush=True)
+
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
                 optimizer.step()
 
+                avg_loss_this_iter = total_loss_in_iter
+                print(f"Trainer (Rank {rank}): Epoch {epoch+1}, Step {step+1}, GRPO Iter {grpo_iter+1}/{config.batch_updates}, Loss: {avg_loss_this_iter:.4f}", flush=True)
                 wandb.log({
-                    "loss": loss.item(),
+                    "loss": avg_loss_this_iter,
                     "step": step,
                     "grpo_iter": grpo_iter + 1,
                     "epoch": epoch + 1,
                 })
-
-                print(f"Epoch {epoch + 1}/{config.train_epochs}, Step {step + 1}, "
-                        f"GRPO iter {grpo_iter + 1}/{config.batch_updates}, loss: {loss.item():.4f}", flush=True)
-                
-            del rollout_data
-            torch.cuda.empty_cache()
-           
-
+            
             wandb.log({"average_reward": avg_reward, "step": step, "epoch": epoch + 1})
-            print(f"Epoch {epoch + 1}, Step {step+1}, Avg Reward: {avg_reward:.4f}, Loss: {loss.item():.4f}", flush=True)
-            step += 1  
 
-            for param in model.parameters():
-                dist.broadcast(param.data, src=rank)
-                # Wait to receive from the generator
-    if rank == config.num_reward_workers:
+            t0 = time.perf_counter()
+            for p in model.parameters():
+                dist.broadcast(p.data, src=rank)
+            
+            wait = time.perf_counter() - t0 
+            print(f"TIME to sync parameters across devices {wait}", flush=True)
+
+            step += 1
+
+            del mini_batches
+            torch.cuda.empty_cache()
+
+
+    if rank == num_reward_workers:
         wandb.finish()
     return
 
@@ -335,7 +291,8 @@ def spawn_main(config: TrainConfig):
     
     # 1) parse config exactly once
     world_size = config.num_reward_workers + 1
-    queue = mp.Queue(maxsize=2*config.num_reward_workers )
+    spawn_ctx = mp.get_context("spawn")
+    queue = spawn_ctx.Queue(maxsize=2*config.num_reward_workers )
     mp.spawn(
         fn=main,
         nprocs=world_size,
@@ -344,7 +301,5 @@ def spawn_main(config: TrainConfig):
     )
 
 if __name__ == "__main__":
-
-    mp.set_start_method("spawn")
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,7"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
     spawn_main()

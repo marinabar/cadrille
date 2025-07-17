@@ -15,6 +15,7 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.distributed.elastic.multiprocessing.errors import record
+from torch.cuda.comm import broadcast_coalesced
 import torch.multiprocessing as mp
 
 #from utils import evaluate_model_mm
@@ -49,24 +50,26 @@ def reward_inference_worker(queue, model, processor, train_data, config, rank):
     """GPU 0: sample rollouts, compute old log‑probs & advantages, enqueue minimal tensors."""
     torch.cuda.set_device(rank)
 
-    sampler = DistributedSampler(train_data, num_replicas=2, rank=rank, shuffle=True)
+
+    sampler = DistributedSampler(train_data, num_replicas=config.num_reward_workers, rank=rank, shuffle=True)
 
     reward_fn = get_reward_function(config.failure_reward)
     step = 0
+    devices = [rank, config.num_reward_workers]
 
     dataloader = DataLoader(train_data, batch_size=config.batch_size, collate_fn=partial(collate_img_pc_v1, processor=processor, n_points=256), sampler=sampler,
-                                num_workers=23)
+                                num_workers=23, pin_memory=True)
     
     for epoch in range(config.train_epochs):
 
-
         print(f"Generator (Rank {rank}): Starting epoch {epoch + 1}/{config.train_epochs}.")
         sampler.set_epoch(epoch)
+
         for batch in dataloader:
             # synchronize the model parameters from GPU 1
             print(f"Generator (Rank {rank}): Synchronizing model parameters.")
             for param in model.parameters():
-                dist.broadcast(param.data, src=1)
+                dist.broadcast(param.data, src=config.num_reward_workers)
             print(f"Generating rollouts for batch {step + 1}/{len(dataloader)}")
             rollout, avg_reward = generate_rollout_data(
                 model,
@@ -80,33 +83,33 @@ def reward_inference_worker(queue, model, processor, train_data, config, rank):
                 buffer = None)
             
         
+            payload = {} 
+            for key in [
+                IPCKeys.INPUT_IDS,
+                IPCKeys.ATT_MASK,
+                IPCKeys.COMP_MASK,
+                IPCKeys.ADV,
+                IPCKeys.OLD_LOGP,
+                IPCKeys.POINT_CLOUD,
+                IPCKeys.IS_PC,
+                IPCKeys.IS_IMG,
+                IPCKeys.LOGITS_TO_KEEP,
+                IPCKeys.AVG_REWARD
 
-            payload = {
-                IPCKeys.INPUT_IDS: rollout["input_ids"].cpu(),
-                IPCKeys.ATT_MASK: rollout["attention_mask"].cpu(),
-                IPCKeys.COMP_MASK: rollout["completion_mask"].cpu(),
-                IPCKeys.ADV: rollout["advantages"].cpu(),
-                IPCKeys.OLD_LOGP: rollout["old_log_probs"].cpu(),
-                IPCKeys.POINT_CLOUD: rollout["point_cloud"].cpu(),
-                IPCKeys.IS_PC: rollout["is_pc"].cpu(),
-                IPCKeys.IS_IMG: rollout["is_img"].cpu(),
-                IPCKeys.LOGITS_TO_KEEP: rollout["logits_to_keep"],
-                IPCKeys.AVG_REWARD: avg_reward,
-            }
-            # Handle optional video tensors
-            if rollout.get("pixel_values_videos") is not None:
-                payload[IPCKeys.PIXEL_VALUES_VIDEOS] = rollout["pixel_values_videos"].cpu()
-                payload[IPCKeys.VIDEO_GRID_THW] = rollout["video_grid_thw"].cpu()
-            
-
-            t0 = time.perf_counter()
+            ]:
+                if key in rollout:
+                    if isinstance(key, torch.Tensor):
+                        payload[key] = rollout[key].detach().cpu().share_memory_()
+                    else:
+                        payload[key] = rollout[key]
             queue.put(payload)
-            wait = time.perf_counter() - t0 
-            print(f"STEP {step} - waiting time to put to queue {wait}")
+            step+=1
 
         # Signal to trainer that the epoch is finished
         queue.put(None)
+
     print(f"Generator (Rank {rank}): All epochs complete.")
+
 
 def trainer_worker(queue, model, processor, config, rank):
 
@@ -127,17 +130,18 @@ def trainer_worker(queue, model, processor, config, rank):
         group=config.group,
         name=config.name,
         config=asdict(config),
-        reinit=True,
     )
 
     os.environ["WANDB_RUN_ID"] = run.id
     
+    # Initial broadcast of parameters
     for param in model.parameters():
-        dist.broadcast(param.data, src=1)
+        dist.broadcast(param.data, src=rank)
 
     for epoch in range(config.train_epochs):
         print(f"Trainer (Rank {rank}): Starting epoch {epoch + 1}/{config.train_epochs}.")
         while True:
+
             t0 = time.perf_counter()
             payload = queue.get()
             wait = time.perf_counter() - t0 
@@ -150,15 +154,13 @@ def trainer_worker(queue, model, processor, config, rank):
             if payload is None:
                 print(f"Trainer (Rank {rank}): Received end-of-epoch signal.")
                 break  # End of epoch
-            
 
-
-            t0 = time.perf_counter()
-
-            rollout_data = {
-                key: (val.to(rank, non_blocking=True) if isinstance(val, torch.Tensor) else val)
-                for key, val in payload.items()
-            }
+            rollout_data = {}
+            for key, val in payload.items():
+                if isinstance(val, torch.Tensor):
+                    rollout_data[key] = val.to(rank, non_blocking=True)
+                else:
+                    rollout_data[key] = val
 
 
             wait = time.perf_counter() - t0 
@@ -202,22 +204,19 @@ def trainer_worker(queue, model, processor, config, rank):
             for param in model.parameters():
                 dist.broadcast(param.data, src=rank)
                 # Wait to receive from the generator
-    if rank == 1:
+    if rank == config.num_reward_workers:
         wandb.finish()
     return
 
 
 
 
-
 def main(
-    rank: int, world_size: int, queue, config: TrainConfig, ):
+    rank: int, world_size: int, queue, config: TrainConfig):
     print(f"main invoked as rank={rank}, world_size={world_size}", flush=True)
     os.environ["RANK"]= str(rank)
     os.environ["LOCAL_RANK"] = str(rank)
     os.environ["WORLD_SIZE"]    = str(world_size)
-
-    assert world_size == 2, "Use --nproc_per_node=2"
 
     setup(world_size)
     torch.cuda.set_device(rank)
@@ -249,38 +248,37 @@ def main(
     print(f"\nRank {rank}: Starting RL fine-tuning using GRPO…")
 
 
-    if rank == 0:
+    if rank < config.num_reward_workers:
         print(f"Rank {rank}: Starting reward inference worker", flush=True)
         reward_inference_worker(
-            queue, model, processor, train_data, config, rank
+            queue, model, processor, train_data, config, rank,
         )
     else:
         print(f"Rank {rank}: Starting trainer worker", flush=True)
         trainer_worker(
-            queue, model, processor, config, rank
+            queue, model, processor, config, rank,
         )
     cleanup()
     print("Training completed.")
 
 @pyrallis.wrap()
 def spawn_main(config: TrainConfig):
-    import torch.multiprocessing as mp
-    mp.set_start_method("spawn", force=True)
 
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "1245"
     
     # 1) parse config exactly once
-    world_size = 2  # or config.wo rld_size
-    with Manager() as mgr:
-        queue = mgr.Queue(maxsize=2)
-        mp.spawn(
-            fn=main,
-            nprocs=world_size,
-            args=(world_size, queue, config),
-            join=True,
-        )
+    world_size = config.num_reward_workers + 1
+    queue = mp.Queue(maxsize=2*config.num_reward_workers )
+    mp.spawn(
+        fn=main,
+        nprocs=world_size,
+        args=(world_size, queue, config,),
+        join=True,
+    )
 
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "2,7"
+
+    mp.set_start_method("spawn")
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,7"
     spawn_main()

@@ -2,6 +2,7 @@ import os
 
 import numpy as np
 import wandb
+import time
 
 os.environ["PYGLET_HEADLESS"] = "True"
 
@@ -11,7 +12,7 @@ from torch.utils.data import DataLoader
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from utils import evaluate_model_mm
+#from evaluate import evaluate_model_mm
 from dataset_utils import IndexBuffer
 
 
@@ -113,22 +114,32 @@ def generate_rollout_data(model, reward_function,
     """
     prompts = batch_samples
     with torch.no_grad():
+        t0 = time.perf_counter()
         point_cloud, prompt_ids, prompt_mask, is_pc, is_img, pixel_values_videos, video_grid_thw, completion_ids, completion_mask = generate_completions(
             model, processor, prompts, num_generations, max_completion_length
         )
+
+        gen_time = time.perf_counter() - t0
+        print(f"[TIME] generation time: {gen_time:.3f} s", flush=True)
+
         input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
         logits_to_keep = completion_ids.size(1)
 
         formatted_completions = [processor.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False) for ids in completion_ids]
         repeated_answers = [a for a in batch_samples['mesh_path'] for _ in range(num_generations)]
-        print("getting rewards", flush=True)
+        #print("getting rewards", flush=True)
+
+        t1 = time.perf_counter()
+
         rewards = torch.tensor(
             reward_function(completions=formatted_completions, answer=repeated_answers),
             dtype=torch.float32,
             device=model.device
         )
-        print("Rewards", rewards, flush=True)
+        reward_time = time.perf_counter() - t1
+        print(f"[TIME] reward computation time: {reward_time:.3f} s", flush=True)
+        #print("Rewards", rewards, flush=True)
 
         batch_size = len(prompts['input_ids'])
         num_generations = num_generations
@@ -136,7 +147,7 @@ def generate_rollout_data(model, reward_function,
             top_samples = num_generations
         rewards = rewards.view(batch_size, num_generations)
         avg_reward = rewards.mean().item()
-        print("Average Reward:", avg_reward)
+        print("Average Reward:", avg_reward, flush=True)
         mean_rewards = rewards.mean(dim=1).repeat_interleave(num_generations)
 
         if buffer:
@@ -271,15 +282,12 @@ def merge_collated_batches(batch1, batch2, padding_value):
             merged[key] = torch.cat([batch1[key], batch2[key]], dim=0)
     return merged
 
-
+"""
 def train_with_grpo_mm(model, processor, train_data, eval_data_deepcad, eval_data_fusion, eval_data_text, sampler, batch_size=4,
                     num_generations=4, top_samples=None, max_completion_length=128,
                     learning_rate=5e-6, batch_updates=3, epsilon_high=0.2, epsilon_low=0.2, train_epochs=1,
                     reward_function=None, collate_fn=None, run_id=None, gpg=False, use_buffer=False, save_path="./models"):
-    """
-    This function is your original working code (train_with_grpo_static)
-    with an added outer loop for iterative GRPO updates per the pseudocode.
-    """
+
     rank = dist.get_rank()
     rank = rank % torch.cuda.device_count()
 
@@ -401,3 +409,4 @@ def train_with_grpo_mm(model, processor, train_data, eval_data_deepcad, eval_dat
             })
         dist.barrier()
     return model.module
+"""

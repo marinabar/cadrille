@@ -17,9 +17,8 @@ from torch.distributed.elastic.multiprocessing.errors import record
 from transformers import AutoProcessor
 
 from dataset_utils import RealDatasetMM
-from grpo_mm import train_with_grpo_mm
-from utils import get_metrics_from_texts, \
-    evaluate_model_mm
+#from grpo_mm import train_with_grpo_mm
+from utils import get_metrics_from_texts
 
 os.environ["PYGLET_HEADLESS"] = "True"
 os.environ["TOKENIZERS_PARALLELISM"] = "True"
@@ -56,7 +55,7 @@ class TrainConfig:
     use_gpg: bool = False
     use_buffer: bool = False
 
-    num_reward_works : int = 1
+    num_reward_workers : int = 1
 
 
 def collate_img_pc_v1(batch, processor, n_points, eval=False):
@@ -126,6 +125,7 @@ def collate_img_pc_v1(batch, processor, n_points, eval=False):
 
 def get_reward_function(failure_reward):
     def combined_reward(completions, answer):
+        torch.cuda.synchronize()
         # Get individual rewards
         rewards = []
         # excepts = []
