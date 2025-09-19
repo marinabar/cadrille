@@ -129,22 +129,19 @@ def compute_normals_metrics(gt_mesh, pred_mesh, tol=1, n_points=8192, visualize=
     return auc_normalized, mean_cos_sim, per_invalid
 
 
-def compute_iou(gt_mesh, pred_mesh):
-    try:
-        intersection_volume = 0
-        for gt_mesh_i in gt_mesh.split():
-            for pred_mesh_i in pred_mesh.split():
-                intersection = gt_mesh_i.intersection(pred_mesh_i)
-                volume = intersection.volume if intersection is not None else 0
-                intersection_volume += volume
-        
-        gt_volume = sum(m.volume for m in gt_mesh.split())
-        pred_volume = sum(m.volume for m in pred_mesh.split())
-        union_volume = gt_volume + pred_volume - intersection_volume
-        assert union_volume > 0
-        return intersection_volume / union_volume
-    except:
-        pass
+def compute_iou(pred_mesh, gt_mesh):
+    intersection_volume = 0
+    for gt_mesh_i in gt_mesh.split():
+        for pred_mesh_i in pred_mesh.split():
+            intersection = gt_mesh_i.intersection(pred_mesh_i)
+            volume = intersection.volume if intersection is not None else 0
+            intersection_volume += volume
+
+    gt_volume = sum(m.volume for m in gt_mesh.split())
+    pred_volume = sum(m.volume for m in pred_mesh.split())
+    union_volume = gt_volume + pred_volume - intersection_volume
+    iou = intersection_volume / (union_volume + 1e-6)
+    return iou
 
 
 def compute_cd(pred_mesh, gt_mesh, n_points=8192):
@@ -230,6 +227,7 @@ def get_metrics_from_single_text(text, gt_file, n_points, nc_params=None, var_na
         return dict(file_name=base_file, cd=None, iou=None, auc=None)
     #t_met = time.perf_counter()
     cd, iou, auc = None, None, None
+    print(f"normalization ; {normalize}")
     try: 
         gt_mesh = trimesh.load_mesh(gt_file)
         if normalize == "fixed":
@@ -322,9 +320,7 @@ def _run_child(conn, arg):
 
 def get_metrics_from_texts(texts, meshes, nc_params=None, max_workers=None, var_name="result", normalize='fixed'):
     print(f"[POOL] POOL size={POOL._processes} pid={os.getpid()}")
-    #t0 = time.perf_counter()
-    #print(f"Example of one generated code : {texts[0]} for file : {meshes[0]}")
-    n_points = 16384
+    n_points = 8192
     args = [
         (text, gt, n_points, nc_params, var_name, normalize)
         for text, gt in zip(texts, meshes)
