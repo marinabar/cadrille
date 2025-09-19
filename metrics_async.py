@@ -227,7 +227,6 @@ def get_metrics_from_single_text(text, gt_file, n_points, nc_params=None, var_na
         return dict(file_name=base_file, cd=None, iou=None, auc=None)
     #t_met = time.perf_counter()
     cd, iou, auc = None, None, None
-    print(f"normalization ; {normalize}")
     try: 
         gt_mesh = trimesh.load_mesh(gt_file)
         if normalize == "fixed":

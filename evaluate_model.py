@@ -66,7 +66,7 @@ def evaluate_model_mm(model, processor, eval_examples, collate_fn, batch_size=8,
             )
 
             pred_metrics = get_metrics_from_texts(
-                decoded_texts, batch["mesh_path"], max_workers=24, var_name='r', normalize=normalize
+                decoded_texts, batch["mesh_path"], var_name='r', normalize=normalize
             )
 
             for m in pred_metrics:
@@ -199,4 +199,4 @@ if __name__ == "__main__":
     parser.add_argument("--model_path", required=True, help="Path or hub id for Cadrille weights")
     parser.add_argument("--normalize", type=str, default="fixed", help="Normalization of stl meshes, can be 'fixed' or 'mesh_extents'")
     args = parser.parse_args()
-    main(args.model_path)
+    main(args.model_path, args.normalize)
