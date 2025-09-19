@@ -167,7 +167,8 @@ def transform_real_mesh(mesh):
     return mesh
 
 
-def transform_gt_mesh(mesh):
+def transform_mesh_0_1(mesh):
+    # scale a mesh to be centered and inside [0,1]
     if mesh is None:
         return None
     if mesh.bounds is None:
@@ -179,17 +180,6 @@ def transform_gt_mesh(mesh):
     mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
     return mesh
 
-def transform_gt_mesh_cad_recodev2(mesh):
-    if mesh is None:
-        return None
-    if mesh.bounds is None:
-        return mesh
-    mesh.apply_translation(-(mesh.bounds[0] + mesh.bounds[1]) / 2.0)  # shift to center
-    extent = np.max(mesh.extents)
-    if extent > 1e-7:
-            mesh.apply_scale(0.875 / extent)
-    mesh.apply_transform(trimesh.transformations.translation_matrix([0.5, 0.5, 0.5]))
-    return mesh
 
 def transform_pred_mesh(mesh):
     if mesh is None:
@@ -220,7 +210,7 @@ def code_to_mesh_and_brep_less_safe(code_str, var_name="result"):
         return None
 
 
-def get_metrics_from_single_text(text, gt_file, n_points, nc_params=None, var_name="result"):
+def get_metrics_from_single_text(text, gt_file, n_points, nc_params=None, var_name="result", normalize="fixed"):
 
     gt_file = os.path.abspath(gt_file)
     base_file = os.path.basename(gt_file).rsplit('.stl', 1)[0]
@@ -242,13 +232,17 @@ def get_metrics_from_single_text(text, gt_file, n_points, nc_params=None, var_na
     cd, iou, auc = None, None, None
     try: 
         gt_mesh = trimesh.load_mesh(gt_file)
-        gt_mesh = transform_real_mesh(gt_mesh)
-        #pred_mesh = transform_pred_mesh(pred_mesh)
-        pred_mesh = transform_real_mesh(pred_mesh)
-        #print(f"normalized pred_mesh extents : {pred_mesh.extents}")
-        #print("Normalizing prediction", flush=True) 
-
-        #(pred_mesh)
+        if normalize == "fixed":
+            gt_mesh = transform_mesh_0_1(gt_mesh)
+            pred_mesh = transform_pred_mesh(pred_mesh)
+        if normalize == "mesh_extents":
+            gt_mesh = transform_real_mesh(gt_mesh)
+            pred_mesh = transform_real_mesh(pred_mesh)
+        else:
+            # default to normalization by extents
+            gt_mesh = transform_real_mesh(gt_mesh)
+            pred_mesh = transform_real_mesh(pred_mesh)
+        
 
         cd = compute_cd(gt_mesh, pred_mesh, n_points)
         try:
@@ -326,13 +320,13 @@ def _run_child(conn, arg):
         conn.close()
 
 
-def get_metrics_from_texts(texts, meshes, nc_params=None, max_workers=None, var_name="result"):
+def get_metrics_from_texts(texts, meshes, nc_params=None, max_workers=None, var_name="result", normalize='fixed'):
     print(f"[POOL] POOL size={POOL._processes} pid={os.getpid()}")
     #t0 = time.perf_counter()
     #print(f"Example of one generated code : {texts[0]} for file : {meshes[0]}")
     n_points = 16384
     args = [
-        (text, gt, n_points, nc_params, var_name)
+        (text, gt, n_points, nc_params, var_name, normalize)
         for text, gt in zip(texts, meshes)
     ]
     async_results = [POOL.apply_async(timed_process_text, args=(arg,)) for arg in args]

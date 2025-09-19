@@ -66,7 +66,7 @@ def evaluate_model_mm(model, processor, eval_examples, collate_fn, batch_size=8,
             )
 
             pred_metrics = get_metrics_from_texts(
-                decoded_texts, batch["mesh_path"], max_workers=24, var_name='r'
+                decoded_texts, batch["mesh_path"], max_workers=24, var_name='r', normalize=normalize
             )
 
             for m in pred_metrics:
@@ -98,7 +98,7 @@ def evaluate_model_mm(model, processor, eval_examples, collate_fn, batch_size=8,
 
 
 
-def main(model_path: str):
+def main(model_path: str, normalize: str = "fixed"):
     print("Starting evaluation")
 
     rank = 0
@@ -134,11 +134,11 @@ def main(model_path: str):
     eval_data_fusion.mode = 'img'
     res_img_deepcad = evaluate_model_mm(
         model, processor, eval_data_deepcad, collate_fn,
-        batch_size=500, normalize="fixed"
+        batch_size=500, normalize=normalize
     )
     res_img_fusion = evaluate_model_mm(
         model, processor, eval_data_fusion, collate_fn,
-        batch_size=500, normalize="fixed"
+        batch_size=500, normalize=normalize
     )
 
     # ---- PC ----
@@ -146,11 +146,11 @@ def main(model_path: str):
     eval_data_fusion.mode = 'pc'
     res_pc_deepcad = evaluate_model_mm(
         model, processor, eval_data_deepcad, collate_fn,
-        batch_size=500, normalize="fixed"
+        batch_size=500, normalize=normalize
     )
     res_pc_fusion = evaluate_model_mm(
         model, processor, eval_data_fusion, collate_fn,
-        batch_size=500, normalize="fixed"
+        batch_size=500, normalize=normalize
     )
 
     def mn(x): return float(np.mean(x)) if len(x) else float("nan")
@@ -197,5 +197,6 @@ def main(model_path: str):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", required=True, help="Path or hub id for Cadrille weights")
+    parser.add_argument("--normalize", type=str, default="fixed", help="Normalization of stl meshes, can be 'fixed' or 'mesh_extents'")
     args = parser.parse_args()
     main(args.model_path)
