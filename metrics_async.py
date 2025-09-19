@@ -10,9 +10,6 @@ import subprocess, sys
 import base64, pickle, json, signal, select
 
 import numpy as np
-import faulthandler
-
-faulthandler.enable()
 
 class NonDaemonProcess(Process):
     def _get_daemon(self):
@@ -245,10 +242,9 @@ def get_metrics_from_single_text(text, gt_file, n_points, nc_params=None, var_na
     cd, iou, auc = None, None, None
     try: 
         gt_mesh = trimesh.load_mesh(gt_file)
-        gt_mesh = transform_gt_mesh(gt_mesh)
-        #gt_mesh = transform_gt_mesh_cad_recodev2(gt_mesh)
-        
-        pred_mesh = transform_pred_mesh(pred_mesh)
+        gt_mesh = transform_real_mesh(gt_mesh)
+        #pred_mesh = transform_pred_mesh(pred_mesh)
+        pred_mesh = transform_real_mesh(pred_mesh)
         #print(f"normalized pred_mesh extents : {pred_mesh.extents}")
         #print("Normalizing prediction", flush=True) 
 
