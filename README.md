@@ -18,7 +18,6 @@ This repository contains an implementation of `cadrille`, a multi-modal (point c
 > [Anton Konushin](https://scholar.google.com/citations?user=ZT_k-wMAAAAJ),
 > [Vladislav Kurenkov](https://dunnolab.ai),
 > [Danila Rukhovich](https://github.com/filaPro) <br>
-> AIRI Institute <br>
 > https://arxiv.org/abs/2505.22914
 
 ### Installation
@@ -67,8 +66,3 @@ If you find this work useful for your research, please cite our paper:
   year={2025}
 }
 ```
-
-### Acknowledgments
-
-<span>This work was supported by [Artificial Intelligence Research Institute](https://airi.net/?force=en) <img src="https://github.com/user-attachments/assets/c6304076-153a-4e3b-b58c-db522f7f78fe" width="50"/></span>
-
