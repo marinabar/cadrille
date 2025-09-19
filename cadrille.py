@@ -6,6 +6,27 @@ from transformers import Qwen2VLForConditionalGeneration
 from transformers.models.qwen2_vl.modeling_qwen2_vl import Qwen2VLCausalLMOutputWithPast
 
 
+def optimize_model_memory(model):
+    """
+    Optimizes the model to use less memory during training.
+    """
+    model.train()
+    model.config.use_cache = False
+
+    # First ensure inputs will require gradients
+    if hasattr(model, "enable_input_require_grads"):
+        model.enable_input_require_grads()
+    else:
+        def make_inputs_require_grad(module, input, output):
+            output.requires_grad_(True)
+        model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+
+    # Then enable gradient checkpointing
+    model.gradient_checkpointing_enable()
+
+    return model
+
+
 def collate(batch, processor, n_points, eval=False):
     messages = []
     is_pc = [0] * len(batch)

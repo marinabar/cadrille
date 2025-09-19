@@ -6,7 +6,7 @@ import torch
 import json
 from functools import partial
 
-from cadrille import Cadrille
+from cadrille import Cadrille, optimize_model_memory
 from transformers import AutoProcessor
 
 # dataset without labels
@@ -15,9 +15,10 @@ import argparse
 from cadrille import collate
 from metrics_async import init_pool, get_metrics_from_texts
 
-TEMPERATURE = 1.0
-TOP_P = 0.99
-TOP_K = 50
+TEMPERATURE = None
+TOP_P = None
+TOP_K = None
+DO_SAMPLE = False
 MAX_NEW_TOKENS = 768
 
 
@@ -53,7 +54,7 @@ def evaluate_model_mm(model, processor, eval_examples, collate_fn, batch_size=8,
                 max_new_tokens=MAX_NEW_TOKENS,
                 bad_words_ids=[[model.config.video_token_id]],
                 temperature=TEMPERATURE,
-                do_sample=True,
+                do_sample=DO_SAMPLE,
                 top_p=TOP_P,
                 top_k=TOP_K,
                 early_stopping=False,
@@ -112,6 +113,8 @@ def main(model_path: str, normalize: str = "fixed"):
         attn_implementation=attn_implementation,
         device_map=rank
     ).train().to(device=torch.device(f"cuda:{rank}"))
+
+    model = optimize_model_memory(model)
 
     processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-2B-Instruct",
                                               min_pixels=256 * 28 * 28,
