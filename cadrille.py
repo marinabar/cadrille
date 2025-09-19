@@ -119,7 +119,12 @@ def collate(batch, processor, n_points, eval=False):
         labels_ids = torch.tensor(labels_list, dtype=torch.int64)
         inputs['labels'] = labels_ids
     else:
-        inputs['file_name'] = [m['file_name'] for m in batch]
+        if 'file_name' in batch[0]:
+            inputs['file_name'] = [m['file_name'] for m in batch]
+        else:
+            inputs['mesh_path'] = [m['mesh_path'] for m in batch]
+            inputs['mesh'] = [m['mesh'] for m in batch]
+            inputs['idx'] = [m['idx'] for m in batch]
     return inputs
 
 
