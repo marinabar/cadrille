@@ -56,6 +56,7 @@ def evaluate_model_mm(model, processor, eval_examples, collate_fn, batch_size=8,
                 do_sample=True,
                 top_p=TOP_P,
                 top_k=TOP_K,
+                early_stopping=False,
             )
 
             generated_ids_trimmed = [
