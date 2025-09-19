@@ -15,7 +15,7 @@ import argparse
 from cadrille import collate
 from metrics_async import init_pool, get_metrics_from_texts
 
-TEMPERATURE = 0.9
+TEMPERATURE = 1.0
 TOP_P = 0.99
 TOP_K = 50
 MAX_NEW_TOKENS = 768

@@ -8,8 +8,10 @@ from PIL import Image, ImageOps
 
 import torch
 from torch.utils.data import Dataset
-from pytorch3d.ops import sample_farthest_points
 
+os.environ["PYGLET_HEADLESS"] = "True"
+
+from pytorch3d.ops import sample_farthest_points
 from metrics_async import transform_real_mesh
 
 
@@ -296,3 +298,18 @@ class CadrilleSTLDataset(Dataset):
             'description': 'Generate cadquery code',
         }
         return input_item
+
+    def get_point_cloud(self, mesh):
+        mesh = self._augment_pc(mesh)
+        point_cloud = mesh_to_point_cloud(mesh, self.n_points)
+
+        input_item = {
+            'point_cloud': point_cloud,
+            'description': 'Generate cadquery code',
+        }
+        return input_item
+
+    def _augment_pc(self, mesh):
+        if self.noise_scale_pc is not None and np.random.rand() < 0.5:
+            mesh.vertices += np.random.normal(loc=0, scale=self.noise_scale_pc, size=mesh.vertices.shape)
+        return mesh
