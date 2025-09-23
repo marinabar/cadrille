@@ -15,10 +15,10 @@ import argparse
 from cadrille import collate
 from metrics_async import init_pool, get_metrics_from_texts
 
-TEMPERATURE = None
-TOP_P = None
+TEMPERATURE = 0.1
+TOP_P = 0.99
 TOP_K = None
-DO_SAMPLE = False
+DO_SAMPLE = True
 MAX_NEW_TOKENS = 768
 
 

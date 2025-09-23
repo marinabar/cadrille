@@ -1,5 +1,7 @@
 import os
 import pickle
+import sys
+sys.path.append("/home/jovyan/users/zhemchuzhnikov/miniconda3/envs/zhemchuzhnikov/lib/python3.10/site-packages")
 import open3d
 import trimesh
 import skimage
@@ -31,7 +33,6 @@ def mesh_to_image(mesh, camera_distance=-1.8, front=[1, 1, 1], width=500, height
     lookat = np.array([0.5, 0.5, 0.5], dtype=np.float32)
     front_array = np.array(front, dtype=np.float32)
     up = np.array([0, 1, 0], dtype=np.float32)
-    
     eye = lookat + front_array * camera_distance
     right = np.cross(up, front_array)
     right /= np.linalg.norm(right)
